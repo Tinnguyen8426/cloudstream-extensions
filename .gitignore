@@ -1,0 +1,20 @@
+# Temporary agent logs
+.agents/
+.gemini/
+*.log
+
+# Build caches & intermediate compilation outputs
+**/.build_cache/
+**/build/
+**/.gradle/
+**/build_integration/
+
+# Python cache
+**/__pycache__/
+*.pyc
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

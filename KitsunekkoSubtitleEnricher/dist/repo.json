@@ -1,0 +1,9 @@
+{
+    "name": "Kitsunekko Japanese Subtitle Enricher Repo",
+    "iconUrl": "https://kitsunekko.net/favicon.ico",
+    "description": "Tự động trích xuất và nhúng phụ đề tiếng Nhật (.ass, .srt, .zip) từ Kitsunekko vào CloudStream",
+    "manifestVersion": 1,
+    "pluginLists": [
+        "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/plugins.json"
+    ]
+}

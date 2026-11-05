@@ -1,0 +1,9 @@
+{
+    "name": "Anime47 Subtitle Enricher Repo",
+    "iconUrl": "https://anime47.best/favicon.ico",
+    "description": "Tự động trích xuất và nhúng phụ đề Tiếng Việt (softsub) từ Anime47 vào CloudStream (tương thích hoàn hảo với Torrentio, TorraStream, StremioX, AnimePahe...)",
+    "manifestVersion": 1,
+    "pluginLists": [
+        "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/plugins.json"
+    ]
+}

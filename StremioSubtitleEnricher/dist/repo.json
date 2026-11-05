@@ -1,0 +1,9 @@
+{
+    "name": "Stremio Subtitle Enricher Repo",
+    "iconUrl": "https://stremio.com/favicon.ico",
+    "description": "Tự động trích xuất và nhúng phụ đề đa ngôn ngữ từ Kitsu, OpenSubtitles v3 và Cinemeta vào CloudStream",
+    "manifestVersion": 1,
+    "pluginLists": [
+        "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/plugins.json"
+    ]
+}
