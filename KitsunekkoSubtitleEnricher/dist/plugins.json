@@ -9,7 +9,7 @@
             "Kitsunekko Japanese Subtitle Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề tiếng Nhật (.ass, .srt, .zip) từ Kitsunekko vào CloudStream",
-        "fileSize": 61586,
+        "fileSize": 64076,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "ja",
         "tvTypes": [
@@ -19,6 +19,6 @@
         ],
         "iconUrl": "https://kitsunekko.net/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-e21e55f959c7c10da7a32cca2ebf2f6aaee67246c5e732673c4e0e51f5955929"
+        "fileHash": "sha256-ea4dcf132ffa3567db03a76a6a669e8628fcfbed930dc13052dbf889a6930eb7"
     }
 ]

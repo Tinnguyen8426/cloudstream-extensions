@@ -9,7 +9,7 @@
             "Anime47 Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề Tiếng Việt (softsub) từ Anime47 vào CloudStream (tương thích hoàn hảo với Torrentio, TorraStream, StremioX, AnimePahe...)",
-        "fileSize": 52032,
+        "fileSize": 55262,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "vi",
         "tvTypes": [
@@ -19,6 +19,6 @@
         ],
         "iconUrl": "https://anime47.best/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-1df87e8b0787e02cdeede28ab3b91b36226e45af83dcedab906f915b996e9971"
+        "fileHash": "sha256-0921bb8cdeb84af37974f7e36a5768305241da9881a86995e5fcc883c8d620ae"
     }
 ]
