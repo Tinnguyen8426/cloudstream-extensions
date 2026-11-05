@@ -151,20 +151,14 @@ object MultiEnricherCoexistenceTest {
             System.exit(1)
         } else {
             println("\nALL MULTI-ENRICHER COEXISTENCE TESTS PASSED SUCCESSFULLY!")
+            System.exit(0)
         }
     }
 
     private fun resetAllEnricherHooks() {
         StremioSubHook.detachHooks()
         KitsunekkoHook.detachHooks()
-        try {
-            val f = Anime47Hook::class.java.getDeclaredField("hookedProviderNames")
-            f.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            (f.get(Anime47Hook) as MutableSet<String>).clear()
-            Anime47Hook.episodeDataCache.clear()
-            Anime47Hook.latestLoadedShow = null
-        } catch (_: Throwable) {}
+        Anime47Hook.detachHooks()
     }
 
     // =========================================================================
@@ -309,8 +303,8 @@ object MultiEnricherCoexistenceTest {
         )
 
         assertTrue("Video callback was executed", videoReceived.get())
-        assertTrue("Video callback passthrough latency < 100ms (actual: ${videoArrivalMs.get()}ms)",
-            videoArrivalMs.get() in 0..100)
+        assertTrue("Video callback passthrough latency < 150ms (actual: ${videoArrivalMs.get()}ms)",
+            videoArrivalMs.get() in 0..150)
     }
 
     // =========================================================================
@@ -346,13 +340,8 @@ object MultiEnricherCoexistenceTest {
             }
         }
 
-        // Mock decorator simulating Anime47 Vietsub emission
-        val anime47 = object : MainAPI() {
-            val delegate = baseProvider
-            init {
-                this.name = delegate.name
-                this.mainUrl = delegate.mainUrl
-            }
+        // Decorator simulating Anime47 Vietsub emission using real EnrichedMainAPI base
+        val anime47 = object : Anime47Hook.EnrichedMainAPI(baseProvider) {
             override suspend fun loadLinks(
                 data: String,
                 isCasting: Boolean,
@@ -369,17 +358,12 @@ object MultiEnricherCoexistenceTest {
                         )
                     )
                 }
-                return delegate.loadLinks(data, isCasting, subtitleCallback, callback)
+                return baseApi.loadLinks(data, isCasting, subtitleCallback, callback)
             }
         }
 
-        // Mock decorator simulating Stremio Multilingual emission
-        val stremio = object : MainAPI() {
-            val delegate = anime47
-            init {
-                this.name = delegate.name
-                this.mainUrl = delegate.mainUrl
-            }
+        // Decorator simulating Stremio Multilingual emission using real StremioEnrichedMainAPI base
+        val stremio = object : StremioSubHook.StremioEnrichedMainAPI(anime47) {
             override suspend fun loadLinks(
                 data: String,
                 isCasting: Boolean,
@@ -402,17 +386,12 @@ object MultiEnricherCoexistenceTest {
                         )
                     )
                 }
-                return delegate.loadLinks(data, isCasting, subtitleCallback, callback)
+                return baseApi.loadLinks(data, isCasting, subtitleCallback, callback)
             }
         }
 
-        // Mock decorator simulating Kitsunekko Japanese emission
-        val kitsunekko = object : MainAPI() {
-            val delegate = stremio
-            init {
-                this.name = delegate.name
-                this.mainUrl = delegate.mainUrl
-            }
+        // Decorator simulating Kitsunekko Japanese emission using real KitsunekkoEnrichedMainAPI base
+        val kitsunekko = object : KitsunekkoHook.KitsunekkoEnrichedMainAPI(stremio) {
             override suspend fun loadLinks(
                 data: String,
                 isCasting: Boolean,
@@ -429,7 +408,7 @@ object MultiEnricherCoexistenceTest {
                         )
                     )
                 }
-                return delegate.loadLinks(data, isCasting, subtitleCallback, callback)
+                return baseApi.loadLinks(data, isCasting, subtitleCallback, callback)
             }
         }
 

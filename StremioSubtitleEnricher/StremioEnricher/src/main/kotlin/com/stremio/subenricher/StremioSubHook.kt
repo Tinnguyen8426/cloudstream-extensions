@@ -299,7 +299,7 @@ object StremioSubHook {
     /**
      * Decorator wrapping MainAPI to inject Stremio subtitles.
      */
-    class StremioEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
+    open class StremioEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
 
         init {
             this.name = baseApi.name
@@ -546,6 +546,13 @@ object StremioSubHook {
                     for (job in activeScrapeJobs) {
                         if (job.isActive) job.join()
                     }
+                }
+            }
+
+            // Cancel any remaining active scrape jobs immediately so withContext exits <= 4.5s
+            for (job in activeScrapeJobs) {
+                if (job.isActive) {
+                    try { job.cancel() } catch (_: Throwable) {}
                 }
             }
 

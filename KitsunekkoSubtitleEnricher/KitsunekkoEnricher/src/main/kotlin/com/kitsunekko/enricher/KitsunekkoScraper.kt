@@ -191,19 +191,19 @@ object KitsunekkoScraper {
      * Fetches root directory anime folders with 24-hour in-memory and disk caching.
      * Thread-safe with Mutex synchronization.
      */
-    suspend fun fetchRootFolders(context: Context?, forceRefresh: Boolean = false): List<KitsunekkoFolder> {
+    suspend fun fetchRootFolders(context: Context?, forceRefresh: Boolean = false): List<KitsunekkoFolder> = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
 
         // 1. Fast path: in-memory cache hit
         if (!forceRefresh) {
             val mem = memoryRootFolders
             if (mem != null && mem.isNotEmpty() && (now - memoryRootTimestamp < CACHE_VALIDITY_MS)) {
-                return mem
+                return@withContext mem
             }
         }
 
         // 2. Synchronized fetch/disk check
-        return rootCacheMutex.withLock {
+        rootCacheMutex.withLock {
             val currentMem = memoryRootFolders
             if (!forceRefresh && currentMem != null && currentMem.isNotEmpty() && (now - memoryRootTimestamp < CACHE_VALIDITY_MS)) {
                 return@withLock currentMem
@@ -254,9 +254,7 @@ object KitsunekkoScraper {
                 memoryRootFolders = fetchedFolders
                 memoryRootTimestamp = now
                 if (context != null) {
-                    withContext(Dispatchers.IO) {
-                        saveRootCacheToDisk(context, now, fetchedFolders)
-                    }
+                    saveRootCacheToDisk(context, now, fetchedFolders)
                 }
                 Log.i(TAG, "Successfully cached ${fetchedFolders.size} anime folders.")
                 return@withLock fetchedFolders
@@ -330,25 +328,25 @@ object KitsunekkoScraper {
     /**
      * Scrapes a single anime folder page to extract subtitle files (.ass, .srt, .ssa) and zip packages.
      */
-    suspend fun scrapeFolderSubtitles(folder: KitsunekkoFolder): List<KitsunekkoSubtitle> {
+    suspend fun scrapeFolderSubtitles(folder: KitsunekkoFolder): List<KitsunekkoSubtitle> = withContext(Dispatchers.IO) {
         val cached = folderSubtitlesCache[folder.path]
-        if (cached != null) return cached
+        if (cached != null) return@withContext cached
 
         val folderUrl = "$BASE_URL" + encodeUrlPath(folder.path)
         Log.d(TAG, "Scraping anime folder: $folderUrl")
 
-        return try {
+        try {
             app.get(
                 url = folderUrl,
                 headers = defaultHeaders,
-                timeout = 10
+                timeout = 5
             ).use { response ->
                 if (!response.isSuccessful) {
                     Log.w(TAG, "Failed to load folder HTML: HTTP ${response.code}")
-                    return emptyList()
+                    return@withContext emptyList()
                 }
 
-                val html = response.safeText() ?: return emptyList()
+                val html = response.safeText() ?: return@withContext emptyList()
                 val candSeason = KitsunekkoMatcher.seasonOf(folder.name)
                 val results = mutableListOf<KitsunekkoSubtitle>()
 
@@ -403,23 +401,24 @@ object KitsunekkoScraper {
         titles: List<String>,
         episode: Int?,
         callback: ((SubtitleFile) -> Unit)? = null
-    ): List<SubtitleFile> {
+    ): List<SubtitleFile> = withContext(Dispatchers.IO) {
         val cleanTitles = titles.map { it.trim() }.filter { it.isNotBlank() }
-        if (cleanTitles.isEmpty()) return emptyList()
+        if (cleanTitles.isEmpty()) return@withContext emptyList()
 
         val rootFolders = fetchRootFolders(context, forceRefresh = false)
-        if (rootFolders.isEmpty()) return emptyList()
+        if (rootFolders.isEmpty()) return@withContext emptyList()
 
         val matchedFolders = findMatchingFolders(rootFolders, cleanTitles, limit = 2)
         if (matchedFolders.isEmpty()) {
             Log.d(TAG, "No matching folders found for titles: $cleanTitles")
-            return emptyList()
+            return@withContext emptyList()
         }
 
         Log.d(TAG, "Matched folders: ${matchedFolders.map { "${it.first.name} (${it.second}pts)" }}")
 
         val outSubtitles = mutableListOf<SubtitleFile>()
         val emittedUrls = mutableSetOf<String>()
+        var zipExtractionsCount = 0
 
         for ((folder, _) in matchedFolders) {
             val folderSubs = scrapeFolderSubtitles(folder)
@@ -428,6 +427,9 @@ object KitsunekkoScraper {
                 if (outSubtitles.size >= MAX_SUBTITLES_PER_QUERY) break
 
                 if (sub.isZip) {
+                    if (zipExtractionsCount >= 2) continue
+                    zipExtractionsCount++
+
                     // Delegate to streaming ZipSubtitleExtractor
                     val extracted = ZipSubtitleExtractor.extractSubtitleFromZip(
                         context = context,
@@ -461,7 +463,7 @@ object KitsunekkoScraper {
             if (outSubtitles.size >= MAX_SUBTITLES_PER_QUERY) break
         }
 
-        return outSubtitles
+        outSubtitles
     }
 
     /**

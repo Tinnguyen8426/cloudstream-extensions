@@ -127,3 +127,4 @@ for idx, p in enumerate(plugins):
         json.dump(sub_repo, f, indent=4, ensure_ascii=False)
 
 print("[+] Successfully generated plugins.json and repo.json for all extensions!")
+

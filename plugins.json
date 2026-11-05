@@ -9,7 +9,7 @@
             "Stremio Subtitle Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề đa ngôn ngữ từ Kitsu, OpenSubtitles v3 và Cinemeta vào CloudStream",
-        "fileSize": 63930,
+        "fileSize": 64304,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "en",
         "tvTypes": [
@@ -21,7 +21,7 @@
         ],
         "iconUrl": "https://stremio.com/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-9f3536ae87843697d024fc5eba911008b821b85bcbecafe3872f62348d3a8929"
+        "fileHash": "sha256-9f266b0370a40b87fda16687b3d3c92d83a5dc89c1bbf114dcfc1f38c850a3cd"
     },
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/KitsunekkoEnricher.cs3",
@@ -33,7 +33,7 @@
             "Kitsunekko Japanese Subtitle Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề tiếng Nhật (.ass, .srt, .zip) từ Kitsunekko vào CloudStream",
-        "fileSize": 61586,
+        "fileSize": 64076,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "ja",
         "tvTypes": [
@@ -43,7 +43,7 @@
         ],
         "iconUrl": "https://kitsunekko.net/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-e21e55f959c7c10da7a32cca2ebf2f6aaee67246c5e732673c4e0e51f5955929"
+        "fileHash": "sha256-ea4dcf132ffa3567db03a76a6a669e8628fcfbed930dc13052dbf889a6930eb7"
     },
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/Anime47Enricher.cs3",
@@ -55,7 +55,7 @@
             "Anime47 Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề Tiếng Việt (softsub) từ Anime47 vào CloudStream (tương thích hoàn hảo với Torrentio, TorraStream, StremioX, AnimePahe...)",
-        "fileSize": 52032,
+        "fileSize": 55262,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "vi",
         "tvTypes": [
@@ -65,6 +65,6 @@
         ],
         "iconUrl": "https://anime47.best/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-1df87e8b0787e02cdeede28ab3b91b36226e45af83dcedab906f915b996e9971"
+        "fileHash": "sha256-0921bb8cdeb84af37974f7e36a5768305241da9881a86995e5fcc883c8d620ae"
     }
 ]

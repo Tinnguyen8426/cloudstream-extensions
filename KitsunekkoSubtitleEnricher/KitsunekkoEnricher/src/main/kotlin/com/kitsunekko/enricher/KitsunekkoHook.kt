@@ -19,6 +19,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -307,7 +308,7 @@ object KitsunekkoHook {
     /**
      * Decorator wrapping MainAPI to inject Kitsunekko Japanese subtitles.
      */
-    class KitsunekkoEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
+    open class KitsunekkoEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
 
         init {
             this.name = baseApi.name
@@ -413,7 +414,10 @@ object KitsunekkoHook {
             callback: (ExtractorLink) -> Unit
         ): Boolean = withContext(Dispatchers.IO) {
             val subtitleScraped = AtomicBoolean(false)
+            val isScrapingInProgress = AtomicBoolean(false)
             val activeScrapeJobs = ConcurrentHashMap.newKeySet<Job>()
+            val supervisor = SupervisorJob()
+            val scrapeScope = CoroutineScope(coroutineContext + supervisor)
 
             suspend fun scrapeAndEmitSubtitles(
                 searchTitle: String,
@@ -444,7 +448,11 @@ object KitsunekkoHook {
                         subtitleScraped.set(true)
                         for (sub in subtitles) {
                             Log.i(TAG, "Injecting Kitsunekko Sub: [${sub.lang}] -> ${sub.url}")
-                            subtitleCallback(sub)
+                            try {
+                                subtitleCallback(sub)
+                            } catch (cbErr: Throwable) {
+                                Log.w(TAG, "Error emitting subtitle to callback: ${cbErr.message}")
+                            }
                         }
                     }
                 } catch (e: Throwable) {
@@ -462,18 +470,30 @@ object KitsunekkoHook {
                 }
                 val seasonNum = cached.seasonNum ?: 1
 
-                val job = launch {
-                    scrapeAndEmitSubtitles(cached.title, epNum, seasonNum, cached.altTitles)
+                if (isScrapingInProgress.compareAndSet(false, true)) {
+                    val job = scrapeScope.launch {
+                        try {
+                            scrapeAndEmitSubtitles(cached.title, epNum, seasonNum, cached.altTitles)
+                        } finally {
+                            isScrapingInProgress.set(false)
+                        }
+                    }
+                    activeScrapeJobs.add(job)
                 }
-                activeScrapeJobs.add(job)
             } else {
                 // Strategy 2: Check if 'data' directly contains parseable anime title & episode
                 val parsed = KitsunekkoMatcher.parseMediaInfo(data)
                 if (parsed.cleanTitle.isNotBlank() && parsed.cleanTitle.length >= 3) {
-                    val job = launch {
-                        scrapeAndEmitSubtitles(parsed.cleanTitle, parsed.episodeNumber, parsed.seasonNumber)
+                    if (isScrapingInProgress.compareAndSet(false, true)) {
+                        val job = scrapeScope.launch {
+                            try {
+                                scrapeAndEmitSubtitles(parsed.cleanTitle, parsed.episodeNumber, parsed.seasonNumber)
+                            } finally {
+                                isScrapingInProgress.set(false)
+                            }
+                        }
+                        activeScrapeJobs.add(job)
                     }
-                    activeScrapeJobs.add(job)
                 }
             }
 
@@ -482,7 +502,7 @@ object KitsunekkoHook {
                 // Immediate video passthrough (0ms delay)
                 callback(link)
 
-                if (!subtitleScraped.get()) {
+                if (!subtitleScraped.get() && !isScrapingInProgress.get()) {
                     var candidateTitle: String? = null
                     var candidateEp: Int? = null
                     var candidateSeason: Int? = null
@@ -529,10 +549,16 @@ object KitsunekkoHook {
                     }
 
                     if (candidateTitle != null) {
-                        val job = launch {
-                            scrapeAndEmitSubtitles(candidateTitle, candidateEp, candidateSeason)
+                        if (isScrapingInProgress.compareAndSet(false, true)) {
+                            val job = scrapeScope.launch {
+                                try {
+                                    scrapeAndEmitSubtitles(candidateTitle, candidateEp, candidateSeason)
+                                } finally {
+                                    isScrapingInProgress.set(false)
+                                }
+                            }
+                            activeScrapeJobs.add(job)
                         }
-                        activeScrapeJobs.add(job)
                     }
                 }
             }
@@ -553,6 +579,14 @@ object KitsunekkoHook {
                     }
                 }
             }
+
+            // Explicitly cancel all lingering scrape jobs so withContext returns strictly <= 4.5s
+            for (job in activeScrapeJobs) {
+                if (job.isActive) {
+                    try { job.cancel() } catch (_: Throwable) {}
+                }
+            }
+            try { supervisor.cancel() } catch (_: Throwable) {}
 
             result
         }

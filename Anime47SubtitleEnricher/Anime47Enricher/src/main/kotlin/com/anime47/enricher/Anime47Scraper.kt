@@ -7,8 +7,24 @@ import com.anime47.enricher.models.SearchResponse
 import com.anime47.enricher.models.SearchResult
 import com.anime47.enricher.models.SubtitleTrack
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.nicehttp.NiceResponse
 import java.net.URLEncoder
+
+internal fun NiceResponse.safeText(): String? {
+    return try {
+        this.text
+    } catch (_: LinkageError) {
+        try {
+            this.okhttpResponse.body?.string()
+        } catch (_: Throwable) {
+            null
+        }
+    } catch (_: Throwable) {
+        null
+    }
+}
 
 /**
  * Core scraping engine for Anime47 (backend API: https://animevui.com/api).
@@ -34,13 +50,15 @@ object Anime47Scraper {
             )
 
             if (response.isSuccessful) {
-                val searchResult = parseJson<SearchResponse>(response.text)
+                val text = response.safeText() ?: ""
+                if (text.isBlank()) return emptyList()
+                val searchResult = parseJson<SearchResponse>(text)
                 searchResult.results ?: emptyList()
             } else {
                 emptyList()
             }
         } catch (e: Throwable) {
-            e.printStackTrace()
+            logError(e)
             emptyList()
         }
     }
@@ -62,7 +80,8 @@ object Anime47Scraper {
             )
 
             // If private mode or token expired, force refresh token and retry once
-            if (!response.isSuccessful || response.text.contains("PRIVATE_MODE")) {
+            val initialText = response.safeText() ?: ""
+            if (!response.isSuccessful || initialText.contains("PRIVATE_MODE")) {
                 val freshToken = Anime47Auth.getValidToken(forceRefresh = true)
                 if (freshToken != null) {
                     response = app.get(
@@ -74,7 +93,9 @@ object Anime47Scraper {
             }
 
             if (response.isSuccessful) {
-                val episodesData = parseJson<EpisodesResponse>(response.text)
+                val text = response.safeText() ?: ""
+                if (text.isBlank()) return emptyList()
+                val episodesData = parseJson<EpisodesResponse>(text)
                 val allEpisodes = mutableListOf<EpisodeItem>()
 
                 episodesData.teams?.forEach { team ->
@@ -87,7 +108,7 @@ object Anime47Scraper {
                 emptyList()
             }
         } catch (e: Throwable) {
-            e.printStackTrace()
+            logError(e)
             emptyList()
         }
     }
@@ -108,7 +129,8 @@ object Anime47Scraper {
                 timeout = 10
             )
 
-            if (!response.isSuccessful || response.text.contains("PRIVATE_MODE")) {
+            val initialText = response.safeText() ?: ""
+            if (!response.isSuccessful || initialText.contains("PRIVATE_MODE")) {
                 val freshToken = Anime47Auth.getValidToken(forceRefresh = true)
                 if (freshToken != null) {
                     response = app.get(
@@ -120,7 +142,9 @@ object Anime47Scraper {
             }
 
             if (response.isSuccessful) {
-                val watchData = parseJson<EpisodeWatchResponse>(response.text)
+                val text = response.safeText() ?: ""
+                if (text.isBlank()) return emptyList()
+                val watchData = parseJson<EpisodeWatchResponse>(text)
                 val subtitleTracks = mutableListOf<SubtitleTrack>()
 
                 watchData.streams?.forEach { stream ->
@@ -150,7 +174,7 @@ object Anime47Scraper {
                 emptyList()
             }
         } catch (e: Throwable) {
-            e.printStackTrace()
+            logError(e)
             emptyList()
         }
     }

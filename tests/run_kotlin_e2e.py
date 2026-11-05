@@ -98,14 +98,12 @@ def main():
             if f.endswith(".kt"):
                 anime47_files.append(os.path.join(root, f))
     
-    anime47_hook_class = os.path.join(ANIME47_CLASSES_DIR, "com", "anime47", "enricher", "Anime47Hook.class")
-    if not os.path.exists(anime47_hook_class):
-        cp_anime47 = os.pathsep.join([TEST_CLASSES_DIR] + base_jars)
-        if is_windows:
-            cmd = f'"{kotlinc_bin}" -cp "{cp_anime47}" -d "{ANIME47_CLASSES_DIR}" -jvm-target 11 -Xskip-metadata-version-check -no-reflect ' + " ".join(f'"{f}"' for f in anime47_files)
-        else:
-            cmd = [kotlinc_bin, "-cp", cp_anime47, "-d", ANIME47_CLASSES_DIR, "-jvm-target", "11", "-Xskip-metadata-version-check", "-no-reflect"] + anime47_files
-        run_command(cmd, "Compiling Anime47 sources with kotlinc...")
+    cp_anime47 = os.pathsep.join([TEST_CLASSES_DIR] + base_jars)
+    if is_windows:
+        cmd = f'"{kotlinc_bin}" -cp "{cp_anime47}" -d "{ANIME47_CLASSES_DIR}" -jvm-target 11 -Xskip-metadata-version-check -no-reflect ' + " ".join(f'"{f}"' for f in anime47_files)
+    else:
+        cmd = [kotlinc_bin, "-cp", cp_anime47, "-d", ANIME47_CLASSES_DIR, "-jvm-target", "11", "-Xskip-metadata-version-check", "-no-reflect"] + anime47_files
+    run_command(cmd, "Compiling Anime47 sources with kotlinc...")
 
     # 4. Build classpath for MultiEnricherCoexistenceTest
     stremio_classes = os.path.join(STREMIO_CACHE, "classes")

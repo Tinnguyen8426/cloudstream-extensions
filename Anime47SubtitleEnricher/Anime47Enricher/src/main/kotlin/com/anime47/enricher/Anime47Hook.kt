@@ -26,6 +26,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Interceptor
 import java.net.URLDecoder
+import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -57,6 +59,8 @@ object Anime47Hook {
     )
     var enrichAllProviders: Boolean = true
 
+    private var observerJob: Job? = null
+
     /**
      * Initializes and attaches hooks to all registered CloudStream providers.
      * Continuously observes for any providers registered dynamically later.
@@ -65,13 +69,182 @@ object Anime47Hook {
         try {
             scanAndHookProviders()
 
-            // Keep observing continuously so any provider loaded at any point gets hooked
-            scope.launch {
+            observerJob?.cancel()
+            observerJob = scope.launch {
                 while (isActive) {
                     delay(3000)
                     scanAndHookProviders()
                 }
             }
+        } catch (e: Throwable) {
+            logError(e)
+        }
+    }
+
+    /**
+     * Resolves the immediate inner delegate of a wrapped provider.
+     * Supports both direct EnrichedMainAPI instances and external wrappers via reflection.
+     */
+    fun getInnerDelegate(provider: MainAPI): MainAPI? {
+        if (provider is EnrichedMainAPI) return provider.baseApi
+
+        val clazz = provider.javaClass
+        // 1. Check common getter methods
+        for (getter in listOf("getBaseApi", "getOriginal", "getDelegate", "getBase", "getInner")) {
+            try {
+                val method = clazz.getMethod(getter)
+                val result = method.invoke(provider)
+                if (result is MainAPI) return result
+            } catch (_: NoSuchMethodException) {
+            } catch (_: Throwable) {}
+        }
+        // 2. Check declared fields traversing class hierarchy
+        var currentClass: Class<*>? = clazz
+        while (currentClass != null && currentClass != MainAPI::class.java && currentClass != Any::class.java) {
+            for (fieldName in listOf("baseApi", "original", "delegate", "base", "inner")) {
+                try {
+                    val field = currentClass.getDeclaredField(fieldName)
+                    field.isAccessible = true
+                    val result = field.get(provider)
+                    if (result is MainAPI) return result
+                } catch (_: NoSuchFieldException) {
+                } catch (_: Throwable) {}
+            }
+            currentClass = currentClass.superclass
+        }
+        return null
+    }
+
+    /**
+     * Traverses to the leaf provider (innermost base provider) in the delegate chain.
+     * Cycle-safe via IdentityHashMap.
+     */
+    fun getBaseProvider(provider: MainAPI): MainAPI {
+        var curr = provider
+        val visited = Collections.newSetFromMap(IdentityHashMap<MainAPI, Boolean>())
+        while (visited.add(curr)) {
+            val next = getInnerDelegate(curr) ?: return curr
+            curr = next
+        }
+        return curr
+    }
+
+    /**
+     * Updates the inner delegate pointer of a wrapper node.
+     */
+    fun setInnerDelegate(parent: MainAPI, newDelegate: MainAPI): Boolean {
+        if (parent is EnrichedMainAPI) {
+            parent.baseApi = newDelegate
+            return true
+        }
+
+        val clazz = parent.javaClass
+        // 1. Try public setter method
+        for (setter in listOf("setBaseApi", "setOriginal", "setDelegate", "setBase", "setInner")) {
+            try {
+                val method = clazz.getMethod(setter, MainAPI::class.java)
+                method.invoke(parent, newDelegate)
+                return true
+            } catch (_: NoSuchMethodException) {
+            } catch (_: Throwable) {}
+        }
+        // 2. Try declared fields
+        var currentClass: Class<*>? = clazz
+        while (currentClass != null && currentClass != MainAPI::class.java && currentClass != Any::class.java) {
+            for (fieldName in listOf("baseApi", "original", "delegate", "base", "inner")) {
+                try {
+                    val field = currentClass.getDeclaredField(fieldName)
+                    field.isAccessible = true
+                    field.set(parent, newDelegate)
+                    return true
+                } catch (_: NoSuchFieldException) {
+                } catch (_: Throwable) {}
+            }
+            currentClass = currentClass.superclass
+        }
+        return false
+    }
+
+    /**
+     * Traverses the delegate chain to check if this enricher is already wrapping the provider.
+     * Supports cross-classloader inspection via class name matching.
+     */
+    fun isAlreadyHooked(provider: MainAPI): Boolean {
+        var curr: MainAPI? = provider
+        val visited = Collections.newSetFromMap(IdentityHashMap<MainAPI, Boolean>())
+        while (curr != null && visited.add(curr)) {
+            if (curr is EnrichedMainAPI || curr.javaClass.name.contains("Anime47Hook\$EnrichedMainAPI") || curr.javaClass.name.contains("Anime47EnrichedMainAPI")) {
+                return true
+            }
+            curr = getInnerDelegate(curr)
+        }
+        return false
+    }
+
+    /**
+     * Removes all instances of this enricher's wrapper from a decorator chain.
+     */
+    fun unwrapProviderChain(root: MainAPI): MainAPI {
+        val isTarget = { p: MainAPI ->
+            p is EnrichedMainAPI || p.javaClass.name.contains("Anime47Hook\$EnrichedMainAPI") || p.javaClass.name.contains("Anime47EnrichedMainAPI")
+        }
+
+        var newRoot: MainAPI = root
+        val visited = Collections.newSetFromMap(IdentityHashMap<MainAPI, Boolean>())
+
+        // 1. Advance root if root itself is a target wrapper
+        while (isTarget(newRoot) && visited.add(newRoot)) {
+            val next = getInnerDelegate(newRoot) ?: break
+            newRoot = next
+        }
+
+        // 2. Splice out any target wrappers deeper in the chain
+        var prev: MainAPI? = if (!isTarget(newRoot)) newRoot else null
+        var curr: MainAPI? = if (prev != null) getInnerDelegate(prev) else null
+
+        while (curr != null && visited.add(curr)) {
+            if (isTarget(curr)) {
+                val next = getInnerDelegate(curr)
+                if (prev != null && next != null) {
+                    setInnerDelegate(prev, next)
+                    curr = next
+                } else {
+                    prev = curr
+                    curr = next
+                }
+            } else {
+                prev = curr
+                curr = getInnerDelegate(curr)
+            }
+        }
+
+        return newRoot
+    }
+
+    /**
+     * Detaches all Anime47 hooks from APIHolder.allProviders and restores original delegates.
+     */
+    @Synchronized
+    fun detachHooks() {
+        try {
+            observerJob?.cancel()
+            observerJob = null
+
+            val allProviders = APIHolder.allProviders
+            allProviders.withLock {
+                for (i in 0 until allProviders.size) {
+                    val provider = allProviders.getOrNull(i) ?: continue
+                    if (isAlreadyHooked(provider)) {
+                        val unwrapped = unwrapProviderChain(provider)
+                        allProviders[i] = unwrapped
+                        Log.i(TAG, "Successfully detached Anime47 Subtitle Enricher from provider: ${provider.name}")
+                        try {
+                            APIHolder.addPluginMapping(unwrapped)
+                        } catch (_: Throwable) {}
+                    }
+                }
+            }
+            hookedProviderNames.clear()
         } catch (e: Throwable) {
             logError(e)
         }
@@ -88,7 +261,7 @@ object Anime47Hook {
             allProviders.withLock {
                 for (i in 0 until allProviders.size) {
                     val provider = allProviders.getOrNull(i) ?: continue
-                    if (provider is EnrichedMainAPI || provider.name.contains("Anime47")) {
+                    if (isAlreadyHooked(provider) || provider.name.contains("Anime47")) {
                         continue
                     }
 
@@ -112,41 +285,48 @@ object Anime47Hook {
     }
 
     private fun shouldHook(provider: MainAPI): Boolean {
-        if (hookedProviderNames.contains(provider.name)) return false
+        if (isAlreadyHooked(provider)) return false
+        val base = getBaseProvider(provider)
+        if (base.name.contains("Anime47", ignoreCase = true)) return false
+        if (hookedProviderNames.contains(base.name) || hookedProviderNames.contains(provider.name)) return false
         if (enrichAllProviders) return true
-        return targetProviders.any { provider.name.contains(it, ignoreCase = true) }
+        return targetProviders.any { base.name.contains(it, ignoreCase = true) || provider.name.contains(it, ignoreCase = true) }
     }
 
     /**
      * EnrichedMainAPI wraps a MainAPI instance, delegating all operations to it,
      * while intercepting load to cache Anime titles, and loadLinks to inject Vietsub from Anime47.
      */
-    class EnrichedMainAPI(val original: MainAPI) : MainAPI() {
+    open class EnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
+
+        var original: MainAPI
+            get() = baseApi
+            set(value) { baseApi = value }
 
         init {
-            this.name = original.name
-            this.mainUrl = original.mainUrl
-            this.lang = original.lang
+            this.name = baseApi.name
+            this.mainUrl = baseApi.mainUrl
+            this.lang = baseApi.lang
         }
 
-        override val hasMainPage: Boolean get() = original.hasMainPage
-        override val hasQuickSearch: Boolean get() = original.hasQuickSearch
-        override val supportedTypes: Set<TvType> get() = original.supportedTypes
+        override val hasMainPage: Boolean get() = baseApi.hasMainPage
+        override val hasQuickSearch: Boolean get() = baseApi.hasQuickSearch
+        override val supportedTypes: Set<TvType> get() = baseApi.supportedTypes
 
         override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-            return original.getMainPage(page, request)
+            return baseApi.getMainPage(page, request)
         }
 
         override suspend fun search(query: String): List<SearchResponse>? {
-            return original.search(query)
+            return baseApi.search(query)
         }
 
         override suspend fun quickSearch(query: String): List<SearchResponse>? {
-            return original.quickSearch(query)
+            return baseApi.quickSearch(query)
         }
 
         override suspend fun load(url: String): LoadResponse? {
-            val response = original.load(url) ?: return null
+            val response = baseApi.load(url) ?: return null
             try {
                 val showTitle = response.name
                 val altTitles = mutableListOf<String>()
@@ -205,11 +385,11 @@ object Anime47Hook {
         }
 
         override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-            return original.getVideoInterceptor(extractorLink)
+            return baseApi.getVideoInterceptor(extractorLink)
         }
 
         override suspend fun getLoadUrl(name: SyncIdName, id: String): String? {
-            return original.getLoadUrl(name, id)
+            return baseApi.getLoadUrl(name, id)
         }
 
         override suspend fun loadLinks(
@@ -332,7 +512,7 @@ object Anime47Hook {
 
             // Execute original provider loadLinks
             val result = try {
-                original.loadLinks(data, isCasting, subtitleCallback, wrappedCallback)
+                baseApi.loadLinks(data, isCasting, subtitleCallback, wrappedCallback)
             } catch (e: Throwable) {
                 logError(e)
                 false
@@ -344,6 +524,13 @@ object Anime47Hook {
                     for (job in activeScrapeJobs) {
                         if (job.isActive) job.join()
                     }
+                }
+            }
+
+            // Cancel any remaining active scrape jobs immediately so withContext exits <= 4.5s
+            for (job in activeScrapeJobs) {
+                if (job.isActive) {
+                    try { job.cancel() } catch (_: Throwable) {}
                 }
             }
 

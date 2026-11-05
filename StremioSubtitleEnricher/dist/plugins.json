@@ -9,7 +9,7 @@
             "Stremio Subtitle Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề đa ngôn ngữ từ Kitsu, OpenSubtitles v3 và Cinemeta vào CloudStream",
-        "fileSize": 63930,
+        "fileSize": 64304,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "en",
         "tvTypes": [
@@ -21,6 +21,6 @@
         ],
         "iconUrl": "https://stremio.com/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-9f3536ae87843697d024fc5eba911008b821b85bcbecafe3872f62348d3a8929"
+        "fileHash": "sha256-9f266b0370a40b87fda16687b3d3c92d83a5dc89c1bbf114dcfc1f38c850a3cd"
     }
 ]

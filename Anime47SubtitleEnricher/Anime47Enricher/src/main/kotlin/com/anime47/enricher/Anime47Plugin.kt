@@ -36,6 +36,16 @@ class Anime47Plugin : Plugin() {
         }
     }
 
+    override fun beforeUnload() {
+        unload()
+    }
+
+    fun unload(context: Context? = null) {
+        Anime47Hook.detachHooks()
+        Anime47Hook.episodeDataCache.clear()
+        Anime47Hook.latestLoadedShow = null
+    }
+
     private fun showSettingsDialog(context: Context) {
         val layout = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL

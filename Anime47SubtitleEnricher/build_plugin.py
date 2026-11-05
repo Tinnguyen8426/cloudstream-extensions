@@ -69,22 +69,52 @@ def main():
         download_file(url, fpath, fname)
         classpath_jars.append(fpath)
 
-    # 2. Setup kotlinc 2.1.0
+    # 2. Setup kotlinc 2.1.0 with Windows portability
     kotlinc_dir = os.path.join(CACHE_DIR, "kotlinc-2.1.0")
-    kotlinc_bin = os.path.join(kotlinc_dir, "bin", "kotlinc")
-    if not os.path.exists(kotlinc_bin) or not os.access(kotlinc_bin, os.X_OK):
-        kotlinc_zip = os.path.join(CACHE_DIR, "kotlinc-2.1.0.zip")
-        download_file(KOTLINC_ZIP_URL, kotlinc_zip, "Kotlin Compiler 2.1.0")
-        print("[*] Extracting kotlinc 2.1.0...")
-        with zipfile.ZipFile(kotlinc_zip, 'r') as z:
-            # zip contains 'kotlinc/' directory
-            z.extractall(os.path.join(CACHE_DIR, "tmp_kotlinc"))
-        shutil.move(os.path.join(CACHE_DIR, "tmp_kotlinc", "kotlinc"), kotlinc_dir)
-        shutil.rmtree(os.path.join(CACHE_DIR, "tmp_kotlinc"), ignore_errors=True)
+    is_windows = (os.name == "nt")
+    kotlinc_exec_name = "kotlinc.bat" if is_windows else "kotlinc"
+    kotlinc_bin = os.path.join(kotlinc_dir, "bin", kotlinc_exec_name)
 
-        subprocess.run(["termux-fix-shebang"] + [os.path.join(kotlinc_dir, "bin", f) for f in os.listdir(os.path.join(kotlinc_dir, "bin"))], check=False)
-        for f in os.listdir(os.path.join(kotlinc_dir, "bin")):
-            os.chmod(os.path.join(kotlinc_dir, "bin", f), 0o755)
+    needs_extract = not os.path.exists(kotlinc_bin)
+    if not is_windows and os.path.exists(kotlinc_bin) and not os.access(kotlinc_bin, os.X_OK):
+        needs_extract = True
+
+    if needs_extract:
+        # Check sibling directories for existing kotlinc
+        sibling_dirs = [
+            os.path.join(os.path.dirname(PROJECT_DIR), "StremioSubtitleEnricher", ".build_cache", "kotlinc-2.1.0"),
+            os.path.join(os.path.dirname(PROJECT_DIR), "KitsunekkoSubtitleEnricher", ".build_cache", "kotlinc-2.1.0")
+        ]
+        reused = False
+        for sib in sibling_dirs:
+            if os.path.exists(os.path.join(sib, "bin", kotlinc_exec_name)):
+                print(f"[*] Reusing extracted kotlinc 2.1.0 from {sib}...")
+                shutil.copytree(sib, kotlinc_dir, dirs_exist_ok=True)
+                reused = True
+                break
+
+        if not reused:
+            kotlinc_zip = os.path.join(CACHE_DIR, "kotlinc-2.1.0.zip")
+            download_file(KOTLINC_ZIP_URL, kotlinc_zip, "Kotlin Compiler 2.1.0")
+            print("[*] Extracting kotlinc 2.1.0...")
+            tmp_extract = os.path.join(CACHE_DIR, "tmp_kotlinc")
+            if os.path.exists(tmp_extract):
+                shutil.rmtree(tmp_extract)
+            with zipfile.ZipFile(kotlinc_zip, 'r') as z:
+                z.extractall(tmp_extract)
+            if os.path.exists(kotlinc_dir):
+                shutil.rmtree(kotlinc_dir)
+            shutil.move(os.path.join(tmp_extract, "kotlinc"), kotlinc_dir)
+            shutil.rmtree(tmp_extract, ignore_errors=True)
+
+        if not is_windows:
+            bin_dir = os.path.join(kotlinc_dir, "bin")
+            subprocess.run(["termux-fix-shebang"] + [os.path.join(bin_dir, f) for f in os.listdir(bin_dir)], check=False)
+            for f in os.listdir(bin_dir):
+                try:
+                    os.chmod(os.path.join(bin_dir, f), 0o755)
+                except OSError:
+                    pass
 
     # 3. Collect Kotlin sources
     kt_files = []
@@ -107,19 +137,32 @@ def main():
     if os.path.exists(stubs_jar):
         classpath_jars.append(stubs_jar)
 
-    classpath_str = ":".join(classpath_jars)
+    classpath_str = os.pathsep.join(classpath_jars)
     print("[*] Compiling Kotlin code with kotlinc 2.1.0...")
-    compile_cmd = [
-        kotlinc_bin,
-        "-cp", classpath_str,
-        "-d", classes_out_dir,
-        "-jvm-target", "11",
-        "-opt-in=kotlin.RequiresOptIn",
-        "-Xskip-metadata-version-check",
-        "-no-reflect"
-    ] + kt_files
+    if is_windows:
+        cmd_parts = [
+            f'"{kotlinc_bin}"',
+            "-cp", f'"{classpath_str}"',
+            "-d", f'"{classes_out_dir}"',
+            "-jvm-target", "11",
+            "-opt-in=kotlin.RequiresOptIn",
+            "-Xskip-metadata-version-check",
+            "-no-reflect"
+        ] + [f'"{kf}"' for kf in kt_files]
+        cmd_str = " ".join(cmd_parts)
+        ret = subprocess.run(cmd_str, shell=True)
+    else:
+        compile_cmd = [
+            kotlinc_bin,
+            "-cp", classpath_str,
+            "-d", classes_out_dir,
+            "-jvm-target", "11",
+            "-opt-in=kotlin.RequiresOptIn",
+            "-Xskip-metadata-version-check",
+            "-no-reflect"
+        ] + kt_files
+        ret = subprocess.run(compile_cmd)
 
-    ret = subprocess.run(compile_cmd)
     if ret.returncode != 0:
         print("[!] Compilation failed!", file=sys.stderr)
         sys.exit(1)

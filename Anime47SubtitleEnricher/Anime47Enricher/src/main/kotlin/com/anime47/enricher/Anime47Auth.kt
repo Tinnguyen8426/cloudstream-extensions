@@ -7,7 +7,9 @@ import com.anime47.enricher.models.RefreshTokenRequest
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.nicehttp.NiceResponse
 import java.util.concurrent.atomic.AtomicBoolean
+
 
 /**
  * Authentication manager for Anime47 (backend API at https://animevui.com/api).
@@ -106,16 +108,17 @@ object Anime47Auth {
                 var token: String? = null
                 var refresh: String? = null
                 var expSec = 3600L
+                val text = response.safeText() ?: ""
 
                 try {
-                    val loginResponse = parseJson<LoginResponse>(response.text)
+                    val loginResponse = parseJson<LoginResponse>(text)
                     token = loginResponse.accessToken
                     refresh = loginResponse.refreshToken
                     expSec = loginResponse.expiresIn ?: 3600L
                 } catch (e: Throwable) {
                     // Fallback regex in case of Jackson TypeReference bytecode mismatch
-                    token = Regex(""""access_token"\s*:\s*"([^"]+)"""").find(response.text)?.groupValues?.get(1)
-                    refresh = Regex(""""refresh_token"\s*:\s*"([^"]+)"""").find(response.text)?.groupValues?.get(1)
+                    token = Regex(""""access_token"\s*:\s*"([^"]+)"""").find(text)?.groupValues?.get(1)
+                    refresh = Regex(""""refresh_token"\s*:\s*"([^"]+)"""").find(text)?.groupValues?.get(1)
                 }
 
                 if (!token.isNullOrBlank()) {
@@ -149,13 +152,14 @@ object Anime47Auth {
             if (response.isSuccessful) {
                 var freshToken: String? = null
                 var expSec = 3600L
+                val text = response.safeText() ?: ""
 
                 try {
-                    val refreshResp = parseJson<LoginResponse>(response.text)
+                    val refreshResp = parseJson<LoginResponse>(text)
                     freshToken = refreshResp.accessToken
                     expSec = refreshResp.expiresIn ?: 3600L
                 } catch (e: Throwable) {
-                    freshToken = Regex(""""access_token"\s*:\s*"([^"]+)"""").find(response.text)?.groupValues?.get(1)
+                    freshToken = Regex(""""access_token"\s*:\s*"([^"]+)"""").find(text)?.groupValues?.get(1)
                 }
 
                 if (!freshToken.isNullOrBlank()) {

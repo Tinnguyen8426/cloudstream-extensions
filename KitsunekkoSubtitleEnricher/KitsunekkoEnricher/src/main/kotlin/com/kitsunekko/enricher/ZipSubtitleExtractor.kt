@@ -57,6 +57,13 @@ object ZipSubtitleExtractor {
             .trimStart('\uFEFF')
     }
 
+    private val CHARSET_SHIFT_JIS by lazy {
+        try { Charset.forName("Shift_JIS") } catch (_: Throwable) { Charsets.UTF_8 }
+    }
+    private val CHARSET_CP1252 by lazy {
+        try { Charset.forName("windows-1252") } catch (_: Throwable) { Charsets.ISO_8859_1 }
+    }
+
     /**
      * Multi-charset auto-detection and fallback decoding:
      * UTF-8 -> Shift-JIS -> Windows-1252 -> Lossy UTF-8
@@ -72,8 +79,7 @@ object ZipSubtitleExtractor {
 
         // 2. Try Shift-JIS (standard for Japanese legacy subtitles)
         try {
-            val shiftJis = Charset.forName("Shift_JIS")
-            val decoded = String(bytes, shiftJis)
+            val decoded = String(bytes, CHARSET_SHIFT_JIS)
             if (!decoded.contains('\uFFFD')) {
                 return normalizeSubText(decoded)
             }
@@ -81,8 +87,7 @@ object ZipSubtitleExtractor {
 
         // 3. Fallback to Windows-1252
         return try {
-            val cp1252 = Charset.forName("windows-1252")
-            normalizeSubText(String(bytes, cp1252))
+            normalizeSubText(String(bytes, CHARSET_CP1252))
         } catch (_: Throwable) {
             // Last resort: lossy UTF-8, never throw unhandled exception
             normalizeSubText(String(bytes, Charsets.UTF_8))
@@ -110,6 +115,12 @@ object ZipSubtitleExtractor {
                     continue
                 }
 
+                if (entry.size > 15 * 1024 * 1024L) {
+                    Log.w(TAG, "Skipping oversize entry: ${entry.name} (${entry.size} bytes)")
+                    zipInputStream.closeEntry()
+                    continue
+                }
+
                 val entryName = entry.name
                 val fileName = entryName.substringAfterLast('/')
                 val ext = fileName.substringAfterLast('.', "").lowercase()
@@ -125,21 +136,31 @@ object ZipSubtitleExtractor {
 
                         val tempFile = File(destinationDir, "tmp_${System.currentTimeMillis()}_ep$targetEpisode.$ext")
                         validateZipSlip(tempFile, destinationDir)
-                        tempFile.writeText(decodedText, Charsets.UTF_8)
+                        try {
+                            tempFile.writeText(decodedText, Charsets.UTF_8)
 
-                        if (outFile.exists()) outFile.delete()
-                        tempFile.renameTo(outFile)
+                            if (outFile.exists()) outFile.delete()
+                            if (!tempFile.renameTo(outFile)) {
+                                tempFile.copyTo(outFile, overwrite = true)
+                                tempFile.delete()
+                            }
 
-                        zipInputStream.closeEntry()
-                        pruneCache(destinationDir, MAX_CACHE_BYTES, MAX_SUB_FILES)
-                        Log.i(TAG, "Extracted ep $targetEpisode from zip: ${outFile.name} (${outFile.length()} bytes)")
-                        return outFile
+                            zipInputStream.closeEntry()
+                            pruneCache(destinationDir, MAX_CACHE_BYTES, MAX_SUB_FILES)
+                            Log.i(TAG, "Extracted ep $targetEpisode from zip: ${outFile.name} (${outFile.length()} bytes)")
+                            return outFile
+                        } finally {
+                            if (tempFile.exists()) tempFile.delete()
+                        }
                     }
                 }
                 zipInputStream.closeEntry()
             }
+        } catch (e: SecurityException) {
+            throw e
         } catch (e: Throwable) {
             Log.e(TAG, "Error while streaming zip: ${e.message}", e)
+            return null
         }
         return null
     }
@@ -153,11 +174,30 @@ object ZipSubtitleExtractor {
         destinationDir: File,
         slug: String
     ): File? {
-        if (!zipFile.exists() || zipFile.length() == 0L) return null
-        return FileInputStream(zipFile).buffered().use { fis ->
-            ZipInputStream(fis).use { zis ->
-                extractSubtitleFromZipStream(zis, targetEpisode, destinationDir, slug)
+        if (!zipFile.exists() || zipFile.length() == 0L) {
+            if (zipFile.exists()) zipFile.delete()
+            return null
+        }
+        return try {
+            try {
+                java.util.zip.ZipFile(zipFile).use { }
+            } catch (ze: Throwable) {
+                Log.e(TAG, "Corrupted zip archive detected ${zipFile.name}: ${ze.message}, deleting", ze)
+                if (zipFile.exists()) zipFile.delete()
+                return null
             }
+
+            FileInputStream(zipFile).buffered().use { fis ->
+                ZipInputStream(fis).use { zis ->
+                    extractSubtitleFromZipStream(zis, targetEpisode, destinationDir, slug)
+                }
+            }
+        } catch (e: SecurityException) {
+            throw e
+        } catch (e: Throwable) {
+            Log.e(TAG, "extractFromZipFile failed on ${zipFile.name}: ${e.message}, deleting cached zip", e)
+            if (zipFile.exists()) zipFile.delete()
+            null
         }
     }
 
@@ -189,16 +229,28 @@ object ZipSubtitleExtractor {
         validateZipSlip(cachedZipFile, zipDir)
 
         if (!cachedZipFile.exists() || cachedZipFile.length() == 0L) {
+            val tmpZip = File(zipDir, "tmp_${System.currentTimeMillis()}_$sanitizedZipName.zip")
+            validateZipSlip(tmpZip, zipDir)
             try {
                 Log.i(TAG, "Downloading zip archive: $zipUrl -> ${cachedZipFile.name}")
-                val downloadOk = app.get(zipUrl, timeout = 30).use { response ->
+                val downloadOk = app.get(zipUrl, timeout = 8).use { response ->
                     if (response.isSuccessful) {
-                        val bytes = response.body.bytes()
-                        val tmpZip = File(zipDir, "tmp_${System.currentTimeMillis()}_$sanitizedZipName.zip")
-                        validateZipSlip(tmpZip, zipDir)
-                        tmpZip.writeBytes(bytes)
+                        response.body.byteStream().use { input ->
+                            FileOutputStream(tmpZip).use { output ->
+                                val buffer = ByteArray(8192)
+                                var bytesRead: Int
+                                while (input.read(buffer).also { bytesRead = it } != -1) {
+                                    output.write(buffer, 0, bytesRead)
+                                }
+                                output.flush()
+                            }
+                        }
                         if (cachedZipFile.exists()) cachedZipFile.delete()
-                        tmpZip.renameTo(cachedZipFile)
+                        val renamed = tmpZip.renameTo(cachedZipFile)
+                        if (!renamed) {
+                            tmpZip.copyTo(cachedZipFile, overwrite = true)
+                            tmpZip.delete()
+                        }
                         pruneCache(zipDir, MAX_CACHE_BYTES, MAX_ZIP_FILES)
                         true
                     } else {
@@ -206,17 +258,24 @@ object ZipSubtitleExtractor {
                         false
                     }
                 }
-                if (!downloadOk) return null
+                if (!downloadOk) {
+                    if (cachedZipFile.exists()) cachedZipFile.delete()
+                    return null
+                }
             } catch (e: Throwable) {
                 Log.e(TAG, "Exception downloading zip: ${e.message}")
+                if (cachedZipFile.exists()) cachedZipFile.delete()
                 return null
+            } finally {
+                if (tmpZip.exists()) tmpZip.delete()
             }
         } else {
             cachedZipFile.setLastModified(System.currentTimeMillis())
         }
 
         // 3. Extract the requested episode entry
-        return extractFromZipFile(cachedZipFile, targetEp, subsDir, sanitizedZipName)
+        val result = extractFromZipFile(cachedZipFile, targetEp, subsDir, sanitizedZipName)
+        return result
     }
 
     /**
@@ -228,7 +287,18 @@ object ZipSubtitleExtractor {
         val files = directory.listFiles() ?: return
         if (files.isEmpty()) return
 
-        val sortedFiles = files.filter { it.isFile && !it.name.startsWith("tmp_") }
+        val now = System.currentTimeMillis()
+        // Delete stale temporary files older than 10 minutes
+        for (f in files) {
+            if (f.isFile && f.name.startsWith("tmp_")) {
+                if (now - f.lastModified() > 10 * 60 * 1000L) {
+                    f.delete()
+                }
+            }
+        }
+
+        val remainingFiles = directory.listFiles() ?: return
+        val sortedFiles = remainingFiles.filter { it.isFile && !it.name.startsWith("tmp_") }
             .sortedBy { it.lastModified() }
             .toMutableList()
 
