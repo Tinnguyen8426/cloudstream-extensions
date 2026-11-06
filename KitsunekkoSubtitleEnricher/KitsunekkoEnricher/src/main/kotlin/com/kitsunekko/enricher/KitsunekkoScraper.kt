@@ -438,23 +438,41 @@ object KitsunekkoScraper {
                         targetEpisode = episode
                     )
                     if (extracted != null && extracted.exists()) {
-                        val fileUri = "file://${extracted.absolutePath}"
-                        if (emittedUrls.add(fileUri)) {
-                            val subFile = SubtitleFile("Tiếng Nhật (Kitsunekko)", fileUri)
+                        val subsDir = ZipSubtitleExtractor.getSubsCacheDir(context)
+                        val srtFile = try {
+                            AssToSrtConverter.normalizeFileToSrt(
+                                inputFile = extracted,
+                                destinationDir = subsDir
+                            )
+                        } catch (e: Throwable) {
+                            Log.w(TAG, "Failed converting extracted sub to SRT: ${e.message}")
+                            null
+                        }
+
+                        val serveFile = if (srtFile != null && srtFile.exists()) srtFile else extracted
+                        val httpUrl = KitsunekkoLocalServer.getUrlForFile(serveFile)
+                        if (emittedUrls.add(httpUrl)) {
+                            val subFile = SubtitleFile("Tiếng Nhật (Kitsunekko)", httpUrl)
                             outSubtitles.add(subFile)
                             callback?.invoke(subFile)
-                            Log.i(TAG, "Injected extracted zip subtitle: ${extracted.name}")
+                            Log.i(TAG, "Injected extracted zip subtitle (SRT over HTTP): ${serveFile.name} -> $httpUrl")
                         }
                     }
                 } else if (sub.ext in setOf("ass", "srt", "ssa")) {
                     // Direct subtitle file
                     val matchesEpisode = (episode == null) || (sub.episodeNumber == episode)
                     if (matchesEpisode) {
-                        if (emittedUrls.add(sub.url)) {
-                            val subFile = SubtitleFile("Tiếng Nhật (Kitsunekko)", sub.url)
+                        val srtFile = fetchAndNormalizeDirectSubtitle(sub, context)
+                        val candidateUrl = if (srtFile != null && srtFile.exists()) {
+                            KitsunekkoLocalServer.getUrlForFile(srtFile)
+                        } else {
+                            sub.url
+                        }
+                        if (emittedUrls.add(candidateUrl)) {
+                            val subFile = SubtitleFile("Tiếng Nhật (Kitsunekko)", candidateUrl)
                             outSubtitles.add(subFile)
                             callback?.invoke(subFile)
-                            Log.i(TAG, "Injected direct subtitle: ${sub.name}")
+                            Log.i(TAG, "Injected direct subtitle: ${sub.name} -> $candidateUrl")
                         }
                     }
                 }
@@ -464,6 +482,59 @@ object KitsunekkoScraper {
         }
 
         outSubtitles
+    }
+
+    /**
+     * Downloads and normalizes a direct Kitsunekko subtitle (.ass, .srt, .ssa) to UTF-8 SRT.
+     */
+    suspend fun fetchAndNormalizeDirectSubtitle(
+        sub: KitsunekkoSubtitle,
+        context: Context
+    ): File? = withContext(Dispatchers.IO) {
+        val subsDir = ZipSubtitleExtractor.getSubsCacheDir(context)
+        val ep = sub.episodeNumber ?: 1
+        val baseSlug = sub.name.substringBeforeLast('.')
+            .replace(Regex("""[^a-zA-Z0-9._-]"""), "_")
+            .take(50)
+        val srtFileName = "ep_${ep}_direct_${baseSlug}.srt"
+        val targetFile = File(subsDir, srtFileName)
+
+        try {
+            ZipSubtitleExtractor.validateZipSlip(targetFile, subsDir)
+
+            if (targetFile.exists() && targetFile.length() > 0L) {
+                targetFile.setLastModified(System.currentTimeMillis())
+                return@withContext targetFile
+            }
+
+            Log.i(TAG, "Downloading direct subtitle: ${sub.url} -> $srtFileName")
+            val rawBytes = app.get(
+                url = sub.url,
+                headers = defaultHeaders,
+                timeout = 6
+            ).use { resp ->
+                if (resp.isSuccessful) resp.body.bytes() else null
+            } ?: return@withContext null
+
+            val srtContent = AssToSrtConverter.decodeAndNormalizeToSrt(rawBytes)
+            if (srtContent.isBlank()) return@withContext null
+
+            val tmpFile = File(subsDir, "tmp_${System.currentTimeMillis()}_$srtFileName")
+            ZipSubtitleExtractor.validateZipSlip(tmpFile, subsDir)
+            tmpFile.writeText(srtContent, Charsets.UTF_8)
+            if (targetFile.exists()) targetFile.delete()
+            if (!tmpFile.renameTo(targetFile)) {
+                tmpFile.copyTo(targetFile, overwrite = true)
+                tmpFile.delete()
+            }
+
+            ZipSubtitleExtractor.pruneCache(subsDir, ZipSubtitleExtractor.MAX_CACHE_BYTES, ZipSubtitleExtractor.MAX_SUB_FILES)
+            targetFile
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            Log.w(TAG, "Failed downloading direct subtitle ${sub.name}: ${e.message}")
+            null
+        }
     }
 
     /**

@@ -33,6 +33,8 @@ def main():
         os.path.join(CACHE_DIR, "gson.jar"),
         os.path.join(CACHE_DIR, "jackson-annotations.jar"),
         os.path.join(CACHE_DIR, "okhttp.jar"),
+        os.path.join(CACHE_DIR, "okio.jar"),
+        os.path.join(PROJECT_DIR, "..", "tests", ".build_cache", "okio.jar"),
         os.path.join(CACHE_DIR, "kotlinx-coroutines.jar"),
         os.path.join(CACHE_DIR, "kotlinx-serialization-core.jar"),
         os.path.join(CACHE_DIR, "kotlinx-serialization-json.jar"),

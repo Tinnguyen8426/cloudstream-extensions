@@ -21,7 +21,7 @@
         ],
         "iconUrl": "https://stremio.com/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-9f266b0370a40b87fda16687b3d3c92d83a5dc89c1bbf114dcfc1f38c850a3cd"
+        "fileHash": "sha256-1c616d2d3eeb181819f13651ca5c1666384873315bfa91462c641cfd83baf45f"
     },
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/KitsunekkoEnricher.cs3",
@@ -33,7 +33,7 @@
             "Kitsunekko Japanese Subtitle Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề tiếng Nhật (.ass, .srt, .zip) từ Kitsunekko vào CloudStream",
-        "fileSize": 64076,
+        "fileSize": 77341,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "ja",
         "tvTypes": [
@@ -43,7 +43,7 @@
         ],
         "iconUrl": "https://kitsunekko.net/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-ea4dcf132ffa3567db03a76a6a669e8628fcfbed930dc13052dbf889a6930eb7"
+        "fileHash": "sha256-665c757e00f44ad6a53dda1eb9c2ece3d7f35d655b8272ed6820704ce9291d39"
     },
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/Anime47Enricher.cs3",
@@ -55,7 +55,7 @@
             "Anime47 Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề Tiếng Việt (softsub) từ Anime47 vào CloudStream (tương thích hoàn hảo với Torrentio, TorraStream, StremioX, AnimePahe...)",
-        "fileSize": 55262,
+        "fileSize": 58268,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "vi",
         "tvTypes": [
@@ -65,6 +65,6 @@
         ],
         "iconUrl": "https://anime47.best/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-0921bb8cdeb84af37974f7e36a5768305241da9881a86995e5fcc883c8d620ae"
+        "fileHash": "sha256-163af14d62155d79c5e17ad15cc7fb7fda2d12caaca7e03890d0f8df17679284"
     }
 ]

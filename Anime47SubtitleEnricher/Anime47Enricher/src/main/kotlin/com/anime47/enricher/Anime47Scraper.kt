@@ -1,5 +1,6 @@
 package com.anime47.enricher
 
+import android.util.Log
 import com.anime47.enricher.models.EpisodeItem
 import com.anime47.enricher.models.EpisodeWatchResponse
 import com.anime47.enricher.models.EpisodesResponse
@@ -7,10 +8,11 @@ import com.anime47.enricher.models.SearchResponse
 import com.anime47.enricher.models.SearchResult
 import com.anime47.enricher.models.SubtitleTrack
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.nicehttp.NiceResponse
 import java.net.URLEncoder
+import java.util.Collections
+import java.util.LinkedHashMap
 
 internal fun NiceResponse.safeText(): String? {
     return try {
@@ -32,15 +34,38 @@ internal fun NiceResponse.safeText(): String? {
  */
 object Anime47Scraper {
 
+    private const val TAG = "Anime47Scraper"
     private const val API_BASE_URL = Anime47Auth.API_BASE_URL
+
+    private class LruCache<K, V>(private val maxEntries: Int) :
+        LinkedHashMap<K, V>(maxEntries + 1, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<K, V>?): Boolean =
+            size > maxEntries
+    }
+
+    val subtitleCache = Collections.synchronizedMap(LruCache<String, List<SubtitleTrack>>(128))
+    val searchCache = Collections.synchronizedMap(LruCache<String, List<SearchResult>>(64))
+    val episodesCache = Collections.synchronizedMap(LruCache<Int, List<EpisodeItem>>(64))
+
+    fun clearCaches() {
+        subtitleCache.clear()
+        searchCache.clear()
+        episodesCache.clear()
+        Log.i(TAG, "Cleared Anime47 in-memory caches.")
+    }
 
     /**
      * Searches Anime47 by keyword.
      * Endpoint: GET /search/full/?keyword={keyword}&page=1
      */
     suspend fun searchAnime(keyword: String, page: Int = 1): List<SearchResult> {
+        val trimmed = keyword.trim()
+        if (trimmed.isBlank()) return emptyList()
+        val cacheKey = "${trimmed.lowercase()}_p$page"
+        searchCache[cacheKey]?.let { return it }
+
         return try {
-            val encodedKeyword = URLEncoder.encode(keyword.trim(), "UTF-8")
+            val encodedKeyword = URLEncoder.encode(trimmed, "UTF-8")
             val url = "$API_BASE_URL/search/full/?keyword=$encodedKeyword&page=$page"
             
             val response = app.get(
@@ -51,14 +76,17 @@ object Anime47Scraper {
 
             if (response.isSuccessful) {
                 val text = response.safeText() ?: ""
-                if (text.isBlank()) return emptyList()
                 val searchResult = parseJson<SearchResponse>(text)
-                searchResult.results ?: emptyList()
+                val results = searchResult.results ?: emptyList()
+                if (results.isNotEmpty()) {
+                    searchCache[cacheKey] = results
+                }
+                results
             } else {
                 emptyList()
             }
         } catch (e: Throwable) {
-            logError(e)
+            e.printStackTrace()
             emptyList()
         }
     }
@@ -69,6 +97,8 @@ object Anime47Scraper {
      * Requires Authorization: Bearer {accessToken}
      */
     suspend fun getEpisodes(animeId: Int): List<EpisodeItem> {
+        episodesCache[animeId]?.let { return it }
+
         val token = Anime47Auth.getValidToken() ?: return emptyList()
 
         return try {
@@ -94,7 +124,6 @@ object Anime47Scraper {
 
             if (response.isSuccessful) {
                 val text = response.safeText() ?: ""
-                if (text.isBlank()) return emptyList()
                 val episodesData = parseJson<EpisodesResponse>(text)
                 val allEpisodes = mutableListOf<EpisodeItem>()
 
@@ -103,12 +132,15 @@ object Anime47Scraper {
                         group.episodes?.let { allEpisodes.addAll(it) }
                     }
                 }
+                if (allEpisodes.isNotEmpty()) {
+                    episodesCache[animeId] = allEpisodes
+                }
                 allEpisodes
             } else {
                 emptyList()
             }
         } catch (e: Throwable) {
-            logError(e)
+            e.printStackTrace()
             emptyList()
         }
     }
@@ -143,7 +175,6 @@ object Anime47Scraper {
 
             if (response.isSuccessful) {
                 val text = response.safeText() ?: ""
-                if (text.isBlank()) return emptyList()
                 val watchData = parseJson<EpisodeWatchResponse>(text)
                 val subtitleTracks = mutableListOf<SubtitleTrack>()
 
@@ -174,7 +205,7 @@ object Anime47Scraper {
                 emptyList()
             }
         } catch (e: Throwable) {
-            logError(e)
+            e.printStackTrace()
             emptyList()
         }
     }
@@ -195,6 +226,14 @@ object Anime47Scraper {
         var searchQuery = parsed.cleanTitle
 
         if (searchQuery.isBlank()) return emptyList()
+
+        val cacheKey = "${searchQuery.lowercase()}_ep_${episodeNum}"
+        subtitleCache[cacheKey]?.let { cachedTracks ->
+            if (cachedTracks.isNotEmpty()) {
+                Log.i(TAG, "Cache HIT for Anime47 Vietsub: '$cacheKey' (${cachedTracks.size} tracks)")
+                return cachedTracks
+            }
+        }
 
         // 1. Search anime with primary title
         var searchResults = searchAnime(searchQuery)
@@ -231,6 +270,10 @@ object Anime47Scraper {
             ?: return emptyList()
 
         // 6. Fetch subtitle tracks
-        return getEpisodeSubtitles(matchedEpisode.id)
+        val tracks = getEpisodeSubtitles(matchedEpisode.id)
+        if (tracks.isNotEmpty()) {
+            subtitleCache[cacheKey] = tracks
+        }
+        return tracks
     }
 }

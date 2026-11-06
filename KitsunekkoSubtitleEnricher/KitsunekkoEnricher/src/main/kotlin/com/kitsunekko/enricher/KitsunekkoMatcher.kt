@@ -35,7 +35,7 @@ object KitsunekkoMatcher {
 
     private val SEASON_EPISODE_REGEX = Regex("""[Ss](\d{1,2})\s*[._-]?\s*[Ee](\d{1,4})""", RegexOption.IGNORE_CASE)
     private val EPISODE_TAG_REGEX = Regex(
-        """(?:^|[^0-9a-z])(?:ep?|episode|tap|tập)[\s._-]?(\d{1,4})(?![0-9])""",
+        """(?:^|[^0-9a-z])(?:ep?|episode|tap|tập|第)[\s._-]?(\d{1,4})(?:\s*話)?(?![0-9])""",
         RegexOption.IGNORE_CASE
     )
     private val DASH_EPISODE_REGEX = Regex(

@@ -374,7 +374,7 @@ object Anime47Hook {
                 latestLoadedShow = ShowInfo(
                     title = showTitle,
                     altTitles = altTitles,
-                    episodeNum = 1,
+                    episodeNum = null,
                     seasonNum = 1
                 )
                 Log.d(TAG, "Cached anime details for: '$showTitle' (altTitles: ${altTitles.size})")
@@ -399,6 +399,7 @@ object Anime47Hook {
             callback: (ExtractorLink) -> Unit
         ): Boolean = withContext(Dispatchers.IO) {
             val subtitleScraped = AtomicBoolean(false)
+            val scrapeTriggered = AtomicBoolean(false)
             val activeScrapeJobs = ConcurrentHashMap.newKeySet<Job>()
 
             // Helper to scrape subtitles safely and emit them to the player
@@ -439,18 +440,22 @@ object Anime47Hook {
                     epNum = epMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1
                 }
 
-                val job = launch {
-                    scrapeAndEmitSubtitles(cached.title, epNum, cached.altTitles)
+                if (scrapeTriggered.compareAndSet(false, true)) {
+                    val job = launch {
+                        scrapeAndEmitSubtitles(cached.title, epNum, cached.altTitles)
+                    }
+                    activeScrapeJobs.add(job)
                 }
-                activeScrapeJobs.add(job)
             } else {
                 // Strategy 2: Check if 'data' directly contains parseable anime title & episode
                 val parsedData = Anime47Matcher.parseMediaInfo(data)
                 if (parsedData.cleanTitle.isNotBlank() && parsedData.cleanTitle.length >= 3) {
-                    val job = launch {
-                        scrapeAndEmitSubtitles(parsedData.cleanTitle, parsedData.episodeNumber)
+                    if (scrapeTriggered.compareAndSet(false, true)) {
+                        val job = launch {
+                            scrapeAndEmitSubtitles(parsedData.cleanTitle, parsedData.episodeNumber)
+                        }
+                        activeScrapeJobs.add(job)
                     }
-                    activeScrapeJobs.add(job)
                 }
             }
 
@@ -501,7 +506,7 @@ object Anime47Hook {
                         }
                     }
 
-                    if (candidateTitle != null) {
+                    if (candidateTitle != null && scrapeTriggered.compareAndSet(false, true)) {
                         val job = launch {
                             scrapeAndEmitSubtitles(candidateTitle, candidateEp)
                         }

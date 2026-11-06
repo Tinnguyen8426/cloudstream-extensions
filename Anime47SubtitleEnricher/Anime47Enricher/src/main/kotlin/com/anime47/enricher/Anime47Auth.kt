@@ -8,6 +8,8 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.nicehttp.NiceResponse
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
 
 
@@ -31,11 +33,11 @@ object Anime47Auth {
     var email: String = DEFAULT_EMAIL
     var password: String = DEFAULT_PASSWORD
 
-    private var accessToken: String? = null
-    private var refreshToken: String? = null
-    private var tokenExpiresAtMs: Long = 0L
+    @Volatile private var accessToken: String? = null
+    @Volatile private var refreshToken: String? = null
+    @Volatile private var tokenExpiresAtMs: Long = 0L
 
-    private val isAuthenticating = AtomicBoolean(false)
+    private val authMutex = Mutex()
 
     /**
      * Standard headers required by the Anime47 / AnimeVui API to pass CORS and routing.
@@ -65,26 +67,25 @@ object Anime47Auth {
             return accessToken
         }
 
-        // Token expired or force refresh requested
-        synchronized(this) {
+        return authMutex.withLock {
             val currentNow = System.currentTimeMillis()
             if (!forceRefresh && accessToken != null && currentNow < (tokenExpiresAtMs - bufferMs)) {
-                return accessToken
+                return@withLock accessToken
             }
-        }
 
-        // Try refreshing first if we have a refresh token
-        val savedRefreshToken = refreshToken
-        if (!savedRefreshToken.isNullOrBlank() && !forceRefresh) {
-            val refreshSuccess = attemptTokenRefresh(savedRefreshToken)
-            if (refreshSuccess && accessToken != null) {
-                return accessToken
+            // Try refreshing first if we have a refresh token
+            val savedRefreshToken = refreshToken
+            if (!savedRefreshToken.isNullOrBlank() && !forceRefresh) {
+                val refreshSuccess = attemptTokenRefresh(savedRefreshToken)
+                if (refreshSuccess && accessToken != null) {
+                    return@withLock accessToken
+                }
             }
-        }
 
-        // Full login if refresh failed or was not available
-        val loginSuccess = attemptLogin()
-        return if (loginSuccess) accessToken else null
+            // Full login if refresh failed or was not available
+            val loginSuccess = attemptLogin()
+            if (loginSuccess) accessToken else null
+        }
     }
 
     /**
