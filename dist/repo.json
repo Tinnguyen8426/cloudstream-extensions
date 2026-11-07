@@ -1,0 +1,9 @@
+{
+    "name": "AI Subtitle Translator Repo",
+    "iconUrl": "https://translate.google.com/favicon.ico",
+    "description": "Kho tiện ích mở rộng dịch phụ đề tự động bằng AI trực tiếp trên CloudStream",
+    "manifestVersion": 1,
+    "pluginLists": [
+        "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/plugins.json"
+    ]
+}
