@@ -7,7 +7,11 @@ import com.anime47.enricher.models.RefreshTokenRequest
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.nicehttp.NiceResponse
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
+
 
 /**
  * Authentication manager for Anime47 (backend API at https://animevui.com/api).
@@ -29,11 +33,11 @@ object Anime47Auth {
     var email: String = DEFAULT_EMAIL
     var password: String = DEFAULT_PASSWORD
 
-    private var accessToken: String? = null
-    private var refreshToken: String? = null
-    private var tokenExpiresAtMs: Long = 0L
+    @Volatile private var accessToken: String? = null
+    @Volatile private var refreshToken: String? = null
+    @Volatile private var tokenExpiresAtMs: Long = 0L
 
-    private val isAuthenticating = AtomicBoolean(false)
+    private val authMutex = Mutex()
 
     /**
      * Standard headers required by the Anime47 / AnimeVui API to pass CORS and routing.
@@ -63,26 +67,25 @@ object Anime47Auth {
             return accessToken
         }
 
-        // Token expired or force refresh requested
-        synchronized(this) {
+        return authMutex.withLock {
             val currentNow = System.currentTimeMillis()
             if (!forceRefresh && accessToken != null && currentNow < (tokenExpiresAtMs - bufferMs)) {
-                return accessToken
+                return@withLock accessToken
             }
-        }
 
-        // Try refreshing first if we have a refresh token
-        val savedRefreshToken = refreshToken
-        if (!savedRefreshToken.isNullOrBlank() && !forceRefresh) {
-            val refreshSuccess = attemptTokenRefresh(savedRefreshToken)
-            if (refreshSuccess && accessToken != null) {
-                return accessToken
+            // Try refreshing first if we have a refresh token
+            val savedRefreshToken = refreshToken
+            if (!savedRefreshToken.isNullOrBlank() && !forceRefresh) {
+                val refreshSuccess = attemptTokenRefresh(savedRefreshToken)
+                if (refreshSuccess && accessToken != null) {
+                    return@withLock accessToken
+                }
             }
-        }
 
-        // Full login if refresh failed or was not available
-        val loginSuccess = attemptLogin()
-        return if (loginSuccess) accessToken else null
+            // Full login if refresh failed or was not available
+            val loginSuccess = attemptLogin()
+            if (loginSuccess) accessToken else null
+        }
     }
 
     /**
@@ -106,16 +109,17 @@ object Anime47Auth {
                 var token: String? = null
                 var refresh: String? = null
                 var expSec = 3600L
+                val text = response.safeText() ?: ""
 
                 try {
-                    val loginResponse = parseJson<LoginResponse>(response.text)
+                    val loginResponse = parseJson<LoginResponse>(text)
                     token = loginResponse.accessToken
                     refresh = loginResponse.refreshToken
                     expSec = loginResponse.expiresIn ?: 3600L
                 } catch (e: Throwable) {
                     // Fallback regex in case of Jackson TypeReference bytecode mismatch
-                    token = Regex(""""access_token"\s*:\s*"([^"]+)"""").find(response.text)?.groupValues?.get(1)
-                    refresh = Regex(""""refresh_token"\s*:\s*"([^"]+)"""").find(response.text)?.groupValues?.get(1)
+                    token = Regex(""""access_token"\s*:\s*"([^"]+)"""").find(text)?.groupValues?.get(1)
+                    refresh = Regex(""""refresh_token"\s*:\s*"([^"]+)"""").find(text)?.groupValues?.get(1)
                 }
 
                 if (!token.isNullOrBlank()) {
@@ -149,13 +153,14 @@ object Anime47Auth {
             if (response.isSuccessful) {
                 var freshToken: String? = null
                 var expSec = 3600L
+                val text = response.safeText() ?: ""
 
                 try {
-                    val refreshResp = parseJson<LoginResponse>(response.text)
+                    val refreshResp = parseJson<LoginResponse>(text)
                     freshToken = refreshResp.accessToken
                     expSec = refreshResp.expiresIn ?: 3600L
                 } catch (e: Throwable) {
-                    freshToken = Regex(""""access_token"\s*:\s*"([^"]+)"""").find(response.text)?.groupValues?.get(1)
+                    freshToken = Regex(""""access_token"\s*:\s*"([^"]+)"""").find(text)?.groupValues?.get(1)
                 }
 
                 if (!freshToken.isNullOrBlank()) {

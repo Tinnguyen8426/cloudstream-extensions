@@ -139,6 +139,7 @@ object AdversarialIntegrationTest {
             System.exit(1)
         } else {
             println("\nALL ADVERSARIAL INTEGRATION TESTS PASSED SUCCESSFULLY!")
+            System.exit(0)
         }
     }
 

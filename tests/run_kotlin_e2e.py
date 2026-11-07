@@ -17,9 +17,11 @@ ANIME47_CLASSES_DIR = os.path.join(BUILD_CACHE, "anime47_classes")
 STREMIO_DIR = os.path.join(ROOT_DIR, "StremioSubtitleEnricher")
 KITSUNEKKO_DIR = os.path.join(ROOT_DIR, "KitsunekkoSubtitleEnricher")
 ANIME47_DIR = os.path.join(ROOT_DIR, "Anime47SubtitleEnricher")
+AI_TRANSLATOR_DIR = os.path.join(ROOT_DIR, "AiSubtitleTranslator")
 
 STREMIO_CACHE = os.path.join(STREMIO_DIR, ".build_cache")
 KITSUNEKKO_CACHE = os.path.join(KITSUNEKKO_DIR, ".build_cache")
+AI_TRANSLATOR_CACHE = os.path.join(AI_TRANSLATOR_DIR, ".build_cache")
 
 is_windows = (os.name == "nt")
 kotlinc_bin = os.path.join(STREMIO_CACHE, "kotlinc-2.1.0", "bin", "kotlinc.bat" if is_windows else "kotlinc")
@@ -98,24 +100,38 @@ def main():
             if f.endswith(".kt"):
                 anime47_files.append(os.path.join(root, f))
     
-    anime47_hook_class = os.path.join(ANIME47_CLASSES_DIR, "com", "anime47", "enricher", "Anime47Hook.class")
-    if not os.path.exists(anime47_hook_class):
-        cp_anime47 = os.pathsep.join([TEST_CLASSES_DIR] + base_jars)
-        if is_windows:
-            cmd = f'"{kotlinc_bin}" -cp "{cp_anime47}" -d "{ANIME47_CLASSES_DIR}" -jvm-target 11 -Xskip-metadata-version-check -no-reflect ' + " ".join(f'"{f}"' for f in anime47_files)
-        else:
-            cmd = [kotlinc_bin, "-cp", cp_anime47, "-d", ANIME47_CLASSES_DIR, "-jvm-target", "11", "-Xskip-metadata-version-check", "-no-reflect"] + anime47_files
-        run_command(cmd, "Compiling Anime47 sources with kotlinc...")
+    cp_anime47 = os.pathsep.join([TEST_CLASSES_DIR] + base_jars)
+    if is_windows:
+        cmd = f'"{kotlinc_bin}" -cp "{cp_anime47}" -d "{ANIME47_CLASSES_DIR}" -jvm-target 11 -Xskip-metadata-version-check -no-reflect ' + " ".join(f'"{f}"' for f in anime47_files)
+    else:
+        cmd = [kotlinc_bin, "-cp", cp_anime47, "-d", ANIME47_CLASSES_DIR, "-jvm-target", "11", "-Xskip-metadata-version-check", "-no-reflect"] + anime47_files
+    run_command(cmd, "Compiling Anime47 sources with kotlinc...")
 
     # 4. Build classpath for MultiEnricherCoexistenceTest
     stremio_classes = os.path.join(STREMIO_CACHE, "classes")
     kitsunekko_classes = os.path.join(KITSUNEKKO_CACHE, "classes")
+    ai_translator_classes = os.path.join(AI_TRANSLATOR_CACHE, "classes")
+
+    if not os.path.exists(ai_translator_classes) or not os.listdir(ai_translator_classes):
+        ai_src_dir = os.path.join(AI_TRANSLATOR_DIR, "AiTranslator", "src", "main", "kotlin")
+        ai_files = []
+        for root, _, files in os.walk(ai_src_dir):
+            for f in files:
+                if f.endswith(".kt"):
+                    ai_files.append(os.path.join(root, f))
+        cp_ai = os.pathsep.join([TEST_CLASSES_DIR] + base_jars)
+        if is_windows:
+            cmd = f'"{kotlinc_bin}" -cp "{cp_ai}" -d "{ai_translator_classes}" -jvm-target 11 -Xskip-metadata-version-check -no-reflect ' + " ".join(f'"{f}"' for f in ai_files)
+        else:
+            cmd = [kotlinc_bin, "-cp", cp_ai, "-d", ai_translator_classes, "-jvm-target", "11", "-Xskip-metadata-version-check", "-no-reflect"] + ai_files
+        run_command(cmd, "Compiling AiSubtitleTranslator sources with kotlinc...")
 
     full_cp = [
         TEST_CLASSES_DIR,
         ANIME47_CLASSES_DIR,
         stremio_classes,
-        kitsunekko_classes
+        kitsunekko_classes,
+        ai_translator_classes
     ] + base_jars
 
     cp_str = os.pathsep.join(full_cp)
@@ -130,7 +146,7 @@ def main():
 
     # 5. Execute JVM test runner
     print("[*] Executing Kotlin MultiEnricherCoexistenceTest on host JVM...")
-    run_cp = os.pathsep.join([TEST_CLASSES_DIR, ANIME47_CLASSES_DIR, stremio_classes, kitsunekko_classes] + base_jars)
+    run_cp = os.pathsep.join([TEST_CLASSES_DIR, ANIME47_CLASSES_DIR, stremio_classes, kitsunekko_classes, ai_translator_classes] + base_jars)
     java_cmd = ["java", "-Dfile.encoding=UTF-8", "-cp", run_cp, "com.cloudstream.test.e2e.MultiEnricherCoexistenceTest"]
     ret = subprocess.run(java_cmd)
     if ret.returncode != 0:

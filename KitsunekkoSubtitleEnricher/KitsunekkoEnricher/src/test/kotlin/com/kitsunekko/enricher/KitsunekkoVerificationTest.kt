@@ -4,8 +4,12 @@ import com.google.gson.Gson
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.ui.player.PlayerSubtitleHelper
+import com.lagradost.cloudstream3.ui.player.SubtitleOrigin
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import kotlinx.coroutines.runBlocking
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -60,6 +64,10 @@ object KitsunekkoVerificationTest {
         testMultiCharsetFallbackAndNormalization()
         test24HourCacheAndPruning()
         testHookChainingCoexistence()
+        testAssToSrtConversion()
+        testMultiCharsetDecodingAndBOM()
+        testEmbeddedLocalHttpServer()
+        testCloudStreamSubtitlePipelineIntegration()
 
         println("============================================================")
         println(" TEST RESULTS: $passed passed, $failed failed")
@@ -508,5 +516,188 @@ object KitsunekkoVerificationTest {
         // Verify all 3 chained extensions successfully emitted their respective subtitles!
         assertTrue("Anime47 sub emitted in chain", receivedSubs.contains("Tiếng Việt (Anime47)"))
         assertTrue("Stremio sub emitted in chain", receivedSubs.contains("English (Stremio)"))
+    }
+
+    // =========================================================================
+    // 12. ASS/SSA to SubRip (.srt) Conversion & Tag Stripping
+    // =========================================================================
+    private fun testAssToSrtConversion() {
+        println("\n--- 12. Testing ASS/SSA to SubRip (.srt) Conversion ---")
+
+        // Timestamp parsing
+        assertEquals("assTimeToMs centiseconds", 83450L, AssToSrtConverter.assTimeToMs("0:01:23.45"))
+        assertEquals("assTimeToMs milliseconds", 3723456L, AssToSrtConverter.assTimeToMs("01:02:03.456"))
+        assertEquals("msToSrtTime formatting", "00:01:23,450", AssToSrtConverter.msToSrtTime(83450L))
+        assertEquals("assTimeToSrtTime 1 digit frac", "00:00:01,500", AssToSrtConverter.assTimeToSrtTime("0:00:01.5"))
+
+        // Tag stripping
+        val rawTextWithTags = "{\\pos(192,200)}Hello\\NWorld!{\\fad(100,100)}"
+        val cleaned = AssToSrtConverter.stripAssTags(rawTextWithTags)
+        assertEquals("stripAssTags removes tags and converts line breaks", "Hello\nWorld!", cleaned)
+
+        val drawingText = "{\\p1}m 0 0 l 10 10{\\p0}"
+        val drawingCleaned = AssToSrtConverter.stripAssTags(drawingText)
+        assertTrue("stripAssTags strips vector drawings", drawingCleaned.isEmpty())
+
+        // ASS full conversion with chronological reordering
+        val assContent = """
+            [Script Info]
+            Title: Sousou no Frieren Ep 01
+            ScriptType: v4.00+
+
+            [Events]
+            Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+            Dialogue: 0,0:00:05.50,0:00:08.00,Default,,0,0,0,,{\fad(200,200)}勇者ヒンメルの死から29年後。
+            Dialogue: 0,0:00:01.20,0:00:03.80,Default,,0,0,0,,{\pos(100,200)}これが旅の始まりだ。
+        """.trimIndent()
+
+        val convertedSrt = AssToSrtConverter.convertAssToSrt(assContent)
+        assertTrue("isAssOrSsa detects ASS format", AssToSrtConverter.isAssOrSsa(assContent))
+        assertTrue("isSubRip detects generated SRT", AssToSrtConverter.isSubRip(convertedSrt))
+
+        val srtLines = convertedSrt.lines()
+        // Sorted cue 1 must be the earlier timestamp (00:00:01,200)
+        assertEquals("Cue 1 index", "1", srtLines[0].trim())
+        assertTrue("Cue 1 timing", srtLines[1].contains("00:00:01,200 --> 00:00:03,800"))
+        assertTrue("Cue 1 text", srtLines[2].contains("これが旅の始まりだ。"))
+
+        // Sorted cue 2 must be the later timestamp (00:00:05,500)
+        assertEquals("Cue 2 index", "2", srtLines[4].trim())
+        assertTrue("Cue 2 timing", srtLines[5].contains("00:00:05,500 --> 00:00:08,000"))
+        assertTrue("Cue 2 text", srtLines[6].contains("勇者ヒンメルの死から29年後。"))
+
+        // SSA format support
+        val ssaContent = """
+            [Script Info]
+            ScriptType: v4.00
+
+            [V4 Styles]
+            Format: Name, Fontname
+
+            [Events]
+            Format: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+            Dialogue: Marked=0,0:01:00.00,0:01:04.00,Default,,0,0,0,,SSA Japanese Dialogue
+        """.trimIndent()
+
+        val convertedSsa = AssToSrtConverter.convertAssToSrt(ssaContent)
+        assertTrue("SSA converted to SubRip format", AssToSrtConverter.isSubRip(convertedSsa))
+        assertTrue("SSA contains text", convertedSsa.contains("SSA Japanese Dialogue"))
+    }
+
+    // =========================================================================
+    // 13. Multi-Charset Decoding & Japanese Encoding Fidelity
+    // =========================================================================
+    private fun testMultiCharsetDecodingAndBOM() {
+        println("\n--- 13. Testing Multi-Charset Decoding & Japanese Encoding Fidelity ---")
+
+        val expectedKanji = "【日本語字幕】葬送のフリーレン 第01話「冒険の終わり」"
+
+        // 1. UTF-8 with BOM
+        val utf8BomBytes = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) +
+                expectedKanji.toByteArray(Charsets.UTF_8)
+        val decodedBom = AssToSrtConverter.decodeText(utf8BomBytes)
+        assertEquals("UTF-8 with BOM decoded", expectedKanji, decodedBom)
+
+        // 2. UTF-16 Little Endian with BOM
+        val utf16LeBomBytes = byteArrayOf(0xFF.toByte(), 0xFE.toByte()) +
+                expectedKanji.toByteArray(Charsets.UTF_16LE)
+        val decoded16Le = AssToSrtConverter.decodeText(utf16LeBomBytes)
+        assertEquals("UTF-16 LE with BOM decoded", expectedKanji, decoded16Le)
+
+        // 3. UTF-16 Big Endian with BOM
+        val utf16BeBomBytes = byteArrayOf(0xFE.toByte(), 0xFF.toByte()) +
+                expectedKanji.toByteArray(Charsets.UTF_16BE)
+        val decoded16Be = AssToSrtConverter.decodeText(utf16BeBomBytes)
+        assertEquals("UTF-16 BE with BOM decoded", expectedKanji, decoded16Be)
+
+        // 4. Shift-JIS decoding
+        val sjisBytes = expectedKanji.toByteArray(Charset.forName("Shift_JIS"))
+        val decodedSjis = AssToSrtConverter.decodeText(sjisBytes)
+        assertFalse("Shift-JIS decode contains no replacement chars", decodedSjis.contains('\uFFFD'))
+        assertEquals("Shift-JIS decoded exactly", expectedKanji, decodedSjis)
+    }
+
+    // =========================================================================
+    // 14. Embedded Local Loopback HTTP Server
+    // =========================================================================
+    private fun testEmbeddedLocalHttpServer() {
+        println("\n--- 14. Testing Embedded Local Loopback HTTP Server ---")
+
+        val port = KitsunekkoLocalServer.start()
+        assertTrue("Server is running", KitsunekkoLocalServer.isRunning)
+        assertTrue("Port is ephemeral (> 1024)", port > 1024)
+
+        // Create temporary test SRT file
+        val tempDir = File(System.getProperty("java.io.tmpdir"), "kitsu_srv_test_${System.currentTimeMillis()}")
+        tempDir.mkdirs()
+        try {
+            val testFile = File(tempDir, "ep_1_test_stream.srt")
+            testFile.writeText("1\n00:00:01,000 --> 00:00:04,000\nフリーレン：旅の始まり\n\n", Charsets.UTF_8)
+
+            val srtUrl = KitsunekkoLocalServer.registerSubtitle(testFile)
+            assertTrue("Emitted URL is loopback http scheme", srtUrl.startsWith("http://127.0.0.1:$port/sub/"))
+            assertTrue("Emitted URL ends with .srt", srtUrl.endsWith(".srt"))
+
+            // Verify with OkHttpClient (exact client used by ExoPlayer / CloudStream)
+            val client = OkHttpClient()
+
+            // 1. GET request
+            val getRequest = Request.Builder().url(srtUrl).build()
+            client.newCall(getRequest).execute().use { response ->
+                assertEquals("HTTP status is 200", 200, response.code)
+                val contentType = response.header("Content-Type") ?: ""
+                assertTrue("Content-Type is text/plain; charset=utf-8", contentType.contains("text/plain"))
+                val body = response.body?.string() ?: ""
+                assertTrue("Body contains Japanese dialogue", body.contains("フリーレン：旅の始まり"))
+            }
+
+            // 2. HEAD request
+            val headRequest = Request.Builder().url(srtUrl).head().build()
+            client.newCall(headRequest).execute().use { response ->
+                assertEquals("HEAD status is 200", 200, response.code)
+                val body = response.body?.string() ?: ""
+                assertTrue("HEAD body is empty", body.isEmpty())
+            }
+
+            // 3. 404 Not Found
+            val notFoundRequest = Request.Builder().url("http://127.0.0.1:$port/sub/non_existent.srt").build()
+            client.newCall(notFoundRequest).execute().use { response ->
+                assertEquals("Non-existent subtitle returns 404", 404, response.code)
+            }
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    // =========================================================================
+    // 15. CloudStream Player Subtitle Pipeline Integration (R1 Acceptance)
+    // =========================================================================
+    private fun testCloudStreamSubtitlePipelineIntegration() {
+        println("\n--- 15. Testing CloudStream Player Subtitle Pipeline Integration ---")
+
+        val port = KitsunekkoLocalServer.port.takeIf { it > 0 } ?: KitsunekkoLocalServer.start()
+        val srtUrl = "http://127.0.0.1:$port/sub/ep_01_frieren.srt"
+
+        // 1. Emit SubtitleFile as KitsunekkoScraper does
+        val emittedSub = SubtitleFile("Tiếng Nhật (Kitsunekko)", srtUrl)
+
+        // 2. Simulate CloudStream's PlayerSubtitleHelper.Companion.getSubtitleData
+        val subData = PlayerSubtitleHelper.Companion.getSubtitleData(emittedSub)
+
+        // In CloudStream, SubtitleData origin is hardcoded to URL
+        assertEquals("SubtitleData origin is URL", SubtitleOrigin.URL, subData.origin)
+        assertEquals("MIME type resolved to application/x-subrip", "application/x-subrip", subData.mimeType)
+        assertTrue("URL is valid loopback HTTP URL", subData.url.startsWith("http://127.0.0.1:"))
+
+        // 3. Verify OkHttp client accepts this URL without throwing IllegalArgumentException
+        val okHttpClient = OkHttpClient()
+        val okHttpRequest = Request.Builder().url(subData.url).build()
+        // okHttpRequest construction succeeds (unlike "file://", which throws IllegalArgumentException)
+        assertEquals("OkHttp URL scheme is http", "http", okHttpRequest.url.scheme)
+        assertEquals("OkHttp URL host is 127.0.0.1", "127.0.0.1", okHttpRequest.url.host)
+    }
+
+    private fun assertFalse(name: String, condition: Boolean, msg: String = "") {
+        check(name, !condition, "Expected false but was true: $msg")
     }
 }

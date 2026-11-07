@@ -152,14 +152,7 @@ object AdversarialCoexistenceStressTest {
     private fun resetAllEnricherHooks() {
         StremioSubHook.detachHooks()
         KitsunekkoHook.detachHooks()
-        try {
-            val f = Anime47Hook::class.java.getDeclaredField("hookedProviderNames")
-            f.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            (f.get(Anime47Hook) as MutableSet<String>).clear()
-            Anime47Hook.episodeDataCache.clear()
-            Anime47Hook.latestLoadedShow = null
-        } catch (_: Throwable) {}
+        Anime47Hook.detachHooks()
     }
 
     @JvmStatic
@@ -185,6 +178,7 @@ object AdversarialCoexistenceStressTest {
             System.exit(1)
         } else {
             println("\nALL ADVERSARIAL COEXISTENCE STRESS TESTS PASSED SUCCESSFULLY!")
+            System.exit(0)
         }
     }
 

@@ -29,6 +29,7 @@ class KitsunekkoPlugin : Plugin() {
         // 1. Initialize context references and persistent cache
         KitsunekkoHook.init(context)
         KitsunekkoScraper.init(context)
+        KitsunekkoLocalServer.start(context)
 
         // 2. Attach dynamic interceptor hooks to external providers
         KitsunekkoHook.attachHooks()
@@ -46,6 +47,7 @@ class KitsunekkoPlugin : Plugin() {
     fun unload(context: Context? = null) {
         KitsunekkoHook.detachHooks()
         KitsunekkoScraper.clearMemoryCache()
+        KitsunekkoLocalServer.stop()
     }
 
     private fun showSettingsDialog(context: Context) {

@@ -7,18 +7,23 @@ import com.lagradost.cloudstream3.AnimeLoadResponse
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageData
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.MovieLoadResponse
+import com.lagradost.cloudstream3.ProviderType
 import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.SearchResponseList
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvSeriesLoadResponse
 import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.VPNStatus
 import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.syncproviders.SyncIdName
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -222,6 +227,36 @@ object KitsunekkoHook {
         return newRoot
     }
 
+    /**
+     * Safely synchronizes provider mapping in APIHolder.apis:
+     * 1. Purges any pre-existing entries with matching name.
+     * 2. Appends the new canonical wrapper via APIHolder.addPluginMapping.
+     * Ensures exactly ONE entry per provider exists in APIHolder.apis and UI source list.
+     */
+    fun syncPluginMapping(provider: MainAPI) {
+        try {
+            APIHolder.apis.withLock {
+                APIHolder.apis = APIHolder.apis.filter { it.name != provider.name }
+            }
+            APIHolder.addPluginMapping(provider)
+        } catch (_: Throwable) {
+            try {
+                APIHolder.addPluginMapping(provider)
+            } catch (_: Throwable) {}
+        }
+    }
+
+    /**
+     * Atomically deduplicates APIHolder.apis by provider name.
+     */
+    fun deduplicateApis() {
+        try {
+            APIHolder.apis.withLock {
+                APIHolder.apis = APIHolder.apis.distinctBy { it.name }
+            }
+        } catch (_: Throwable) {}
+    }
+
     fun detachHooks() {
         observerJob?.cancel()
         observerJob = null
@@ -235,12 +270,7 @@ object KitsunekkoHook {
                     if (unwrapped !== provider) {
                         allProviders[i] = unwrapped
                         Log.i(TAG, "Unwrapped Kitsunekko Japanese Subtitle Enricher from provider: ${unwrapped.name}")
-                        try {
-                            APIHolder.removePluginMapping(provider)
-                        } catch (_: Throwable) {}
-                        try {
-                            APIHolder.addPluginMapping(unwrapped)
-                        } catch (_: Throwable) {}
+                        syncPluginMapping(unwrapped)
                     }
                 }
             }
@@ -251,6 +281,7 @@ object KitsunekkoHook {
         hookedProviderNames.clear()
         episodeDataCache.clear()
         latestLoadedShow = null
+        deduplicateApis()
     }
 
     @Synchronized
@@ -258,6 +289,18 @@ object KitsunekkoHook {
         try {
             val allProviders = APIHolder.allProviders
             allProviders.withLock {
+                // Defensive deduplication of allProviders
+                val seenNames = mutableSetOf<String>()
+                var idx = 0
+                while (idx < allProviders.size) {
+                    val p = allProviders.getOrNull(idx) ?: break
+                    if (!seenNames.add(p.name)) {
+                        allProviders.removeAt(idx)
+                    } else {
+                        idx++
+                    }
+                }
+
                 for (i in 0 until allProviders.size) {
                     val provider = allProviders.getOrNull(i) ?: continue
                     if (isAlreadyHooked(provider) || provider.name.contains("Kitsunekko", ignoreCase = true)) {
@@ -271,14 +314,11 @@ object KitsunekkoHook {
                         hookedProviderNames.add(base.name)
                         Log.i(TAG, "Successfully attached Kitsunekko Japanese Subtitle Enricher to provider: ${base.name}")
 
-                        try {
-                            APIHolder.addPluginMapping(enriched)
-                        } catch (_: Throwable) {
-                            // Non-fatal if mapping already exists
-                        }
+                        syncPluginMapping(enriched)
                     }
                 }
             }
+            deduplicateApis()
         } catch (e: Throwable) {
             logError(e)
         }
@@ -307,40 +347,164 @@ object KitsunekkoHook {
     /**
      * Decorator wrapping MainAPI to inject Kitsunekko Japanese subtitles.
      */
-    class KitsunekkoEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
+    open class KitsunekkoEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
 
-        init {
-            this.name = baseApi.name
-            this.mainUrl = baseApi.mainUrl
-            this.lang = baseApi.lang
-        }
+        var original: MainAPI
+            get() = baseApi
+            set(value) { baseApi = value }
+
+        override var name: String
+            get() = if (baseApi === this) javaClass.simpleName else baseApi.name
+            set(value) { if (baseApi !== this) baseApi.name = value }
+
+        override var mainUrl: String
+            get() = if (baseApi === this) "" else baseApi.mainUrl
+            set(value) { if (baseApi !== this) baseApi.mainUrl = value }
+
+        override var lang: String
+            get() = if (baseApi === this) "en" else baseApi.lang
+            set(value) { if (baseApi !== this) baseApi.lang = value }
+
+        override var storedCredentials: String?
+            get() = if (baseApi === this) null else baseApi.storedCredentials
+            set(value) { if (baseApi !== this) baseApi.storedCredentials = value }
+
+        override var canBeOverridden: Boolean
+            get() = if (baseApi === this) true else baseApi.canBeOverridden
+            set(value) { if (baseApi !== this) baseApi.canBeOverridden = value }
+
+        override var sequentialMainPage: Boolean
+            get() = if (baseApi === this) false else baseApi.sequentialMainPage
+            set(value) { if (baseApi !== this) baseApi.sequentialMainPage = value }
+
+        override var sequentialMainPageDelay: Long
+            get() = if (baseApi === this) 0L else baseApi.sequentialMainPageDelay
+            set(value) { if (baseApi !== this) baseApi.sequentialMainPageDelay = value }
+
+        override var sequentialMainPageScrollDelay: Long
+            get() = if (baseApi === this) 0L else baseApi.sequentialMainPageScrollDelay
+            set(value) { if (baseApi !== this) baseApi.sequentialMainPageScrollDelay = value }
+
+        override val mainPage: List<MainPageData>
+            get() = if (baseApi === this) emptyList() else baseApi.mainPage
 
         override val hasMainPage: Boolean get() = baseApi.hasMainPage
         override val hasQuickSearch: Boolean get() = baseApi.hasQuickSearch
         override val supportedTypes: Set<TvType> get() = baseApi.supportedTypes
+        override val vpnStatus: VPNStatus get() = baseApi.vpnStatus
+        override val providerType: ProviderType get() = baseApi.providerType
+        override val instantLinkLoading: Boolean get() = baseApi.instantLinkLoading
+        override val hasChromecastSupport: Boolean get() = baseApi.hasChromecastSupport
+        override val hasDownloadSupport: Boolean get() = baseApi.hasDownloadSupport
+        override val usesWebView: Boolean get() = baseApi.usesWebView
+        override val supportedSyncNames: Set<SyncIdName> get() = baseApi.supportedSyncNames
+        override val loadLinksTimeoutMs: Long? get() = baseApi.loadLinksTimeoutMs
+        override val getMainPageTimeoutMs: Long? get() = baseApi.getMainPageTimeoutMs
+        override val searchTimeoutMs: Long? get() = baseApi.searchTimeoutMs
+        override val quickSearchTimeoutMs: Long? get() = baseApi.quickSearchTimeoutMs
+        override val loadTimeoutMs: Long? get() = baseApi.loadTimeoutMs
+
+        private fun sanitizeMainPageRequest(request: MainPageRequest, baseUrl: String): MainPageRequest {
+            val rawData = request.data
+            val base = baseUrl.trimEnd('/')
+            val isAbsolute = rawData.startsWith("http://", ignoreCase = true) || rawData.startsWith("https://", ignoreCase = true)
+            val safeData = when {
+                isAbsolute -> rawData
+                rawData.isNotBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> {
+                    val path = if (rawData.startsWith("/")) rawData else "/$rawData"
+                    "$base$path"
+                }
+                rawData.isBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> base
+                else -> rawData
+            }
+            return if (safeData == request.data) request else MainPageRequest(request.name, safeData, request.horizontalImages)
+        }
+
+        private fun sanitizeUrl(url: String, baseUrl: String): String {
+            val base = baseUrl.trimEnd('/')
+            val isAbsolute = url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)
+            return when {
+                isAbsolute -> url
+                url.isNotBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> {
+                    val path = if (url.startsWith("/")) url else "/$url"
+                    "$base$path"
+                }
+                url.isBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> base
+                else -> url
+            }
+        }
 
         override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-            return baseApi.getMainPage(page, request)
+            return try {
+                val safeReq = sanitizeMainPageRequest(request, baseApi.mainUrl)
+                baseApi.getMainPage(page, safeReq)
+            } catch (t: Throwable) {
+                logError(t)
+                null
+            }
         }
 
         override suspend fun search(query: String): List<SearchResponse>? {
-            return baseApi.search(query)
+            return try {
+                baseApi.search(query)
+            } catch (t: Throwable) {
+                logError(t)
+                null
+            }
+        }
+
+        override suspend fun search(query: String, page: Int): SearchResponseList? {
+            return try {
+                baseApi.search(query, page)
+            } catch (t: Throwable) {
+                logError(t)
+                null
+            }
         }
 
         override suspend fun quickSearch(query: String): List<SearchResponse>? {
-            return baseApi.quickSearch(query)
+            return try {
+                baseApi.quickSearch(query)
+            } catch (t: Throwable) {
+                logError(t)
+                null
+            }
+        }
+
+        override suspend fun extractorVerifierJob(extractorData: String?) {
+            try {
+                baseApi.extractorVerifierJob(extractorData)
+            } catch (t: Throwable) {
+                logError(t)
+            }
         }
 
         override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-            return baseApi.getVideoInterceptor(extractorLink)
+            return try {
+                baseApi.getVideoInterceptor(extractorLink)
+            } catch (t: Throwable) {
+                logError(t)
+                null
+            }
         }
 
         override suspend fun getLoadUrl(name: SyncIdName, id: String): String? {
-            return baseApi.getLoadUrl(name, id)
+            return try {
+                baseApi.getLoadUrl(name, id)
+            } catch (t: Throwable) {
+                logError(t)
+                null
+            }
         }
 
         override suspend fun load(url: String): LoadResponse? {
-            val response = baseApi.load(url) ?: return null
+            val safeUrl = sanitizeUrl(url, baseApi.mainUrl)
+            val response = try {
+                baseApi.load(safeUrl) ?: return null
+            } catch (e: Throwable) {
+                logError(e)
+                return null
+            }
             try {
                 val showTitle = response.name
                 val altTitles = mutableListOf<String>()
@@ -413,7 +577,10 @@ object KitsunekkoHook {
             callback: (ExtractorLink) -> Unit
         ): Boolean = withContext(Dispatchers.IO) {
             val subtitleScraped = AtomicBoolean(false)
+            val isScrapingInProgress = AtomicBoolean(false)
             val activeScrapeJobs = ConcurrentHashMap.newKeySet<Job>()
+            val supervisor = SupervisorJob()
+            val scrapeScope = CoroutineScope(coroutineContext + supervisor)
 
             suspend fun scrapeAndEmitSubtitles(
                 searchTitle: String,
@@ -444,7 +611,11 @@ object KitsunekkoHook {
                         subtitleScraped.set(true)
                         for (sub in subtitles) {
                             Log.i(TAG, "Injecting Kitsunekko Sub: [${sub.lang}] -> ${sub.url}")
-                            subtitleCallback(sub)
+                            try {
+                                subtitleCallback(sub)
+                            } catch (cbErr: Throwable) {
+                                Log.w(TAG, "Error emitting subtitle to callback: ${cbErr.message}")
+                            }
                         }
                     }
                 } catch (e: Throwable) {
@@ -462,18 +633,30 @@ object KitsunekkoHook {
                 }
                 val seasonNum = cached.seasonNum ?: 1
 
-                val job = launch {
-                    scrapeAndEmitSubtitles(cached.title, epNum, seasonNum, cached.altTitles)
+                if (isScrapingInProgress.compareAndSet(false, true)) {
+                    val job = scrapeScope.launch {
+                        try {
+                            scrapeAndEmitSubtitles(cached.title, epNum, seasonNum, cached.altTitles)
+                        } finally {
+                            isScrapingInProgress.set(false)
+                        }
+                    }
+                    activeScrapeJobs.add(job)
                 }
-                activeScrapeJobs.add(job)
             } else {
                 // Strategy 2: Check if 'data' directly contains parseable anime title & episode
                 val parsed = KitsunekkoMatcher.parseMediaInfo(data)
                 if (parsed.cleanTitle.isNotBlank() && parsed.cleanTitle.length >= 3) {
-                    val job = launch {
-                        scrapeAndEmitSubtitles(parsed.cleanTitle, parsed.episodeNumber, parsed.seasonNumber)
+                    if (isScrapingInProgress.compareAndSet(false, true)) {
+                        val job = scrapeScope.launch {
+                            try {
+                                scrapeAndEmitSubtitles(parsed.cleanTitle, parsed.episodeNumber, parsed.seasonNumber)
+                            } finally {
+                                isScrapingInProgress.set(false)
+                            }
+                        }
+                        activeScrapeJobs.add(job)
                     }
-                    activeScrapeJobs.add(job)
                 }
             }
 
@@ -482,7 +665,7 @@ object KitsunekkoHook {
                 // Immediate video passthrough (0ms delay)
                 callback(link)
 
-                if (!subtitleScraped.get()) {
+                if (!subtitleScraped.get() && !isScrapingInProgress.get()) {
                     var candidateTitle: String? = null
                     var candidateEp: Int? = null
                     var candidateSeason: Int? = null
@@ -529,10 +712,16 @@ object KitsunekkoHook {
                     }
 
                     if (candidateTitle != null) {
-                        val job = launch {
-                            scrapeAndEmitSubtitles(candidateTitle, candidateEp, candidateSeason)
+                        if (isScrapingInProgress.compareAndSet(false, true)) {
+                            val job = scrapeScope.launch {
+                                try {
+                                    scrapeAndEmitSubtitles(candidateTitle, candidateEp, candidateSeason)
+                                } finally {
+                                    isScrapingInProgress.set(false)
+                                }
+                            }
+                            activeScrapeJobs.add(job)
                         }
-                        activeScrapeJobs.add(job)
                     }
                 }
             }
@@ -553,6 +742,14 @@ object KitsunekkoHook {
                     }
                 }
             }
+
+            // Explicitly cancel all lingering scrape jobs so withContext returns strictly <= 4.5s
+            for (job in activeScrapeJobs) {
+                if (job.isActive) {
+                    try { job.cancel() } catch (_: Throwable) {}
+                }
+            }
+            try { supervisor.cancel() } catch (_: Throwable) {}
 
             result
         }

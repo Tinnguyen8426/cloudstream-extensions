@@ -20,7 +20,7 @@ plugins = [
     {
         "url": f"{BASE_URL}/StremioSubEnricher.cs3",
         "status": 1,
-        "version": 1,
+        "version": 2,
         "name": "Stremio Subtitle Enricher",
         "internalName": "StremioSubEnricher",
         "authors": [
@@ -44,7 +44,7 @@ plugins = [
     {
         "url": f"{BASE_URL}/KitsunekkoEnricher.cs3",
         "status": 1,
-        "version": 1,
+        "version": 2,
         "name": "Kitsunekko Japanese Subtitle Enricher",
         "internalName": "KitsunekkoEnricher",
         "authors": [
@@ -66,7 +66,7 @@ plugins = [
     {
         "url": f"{BASE_URL}/Anime47Enricher.cs3",
         "status": 1,
-        "version": 3,
+        "version": 4,
         "name": "Anime47 Subtitle Enricher",
         "internalName": "Anime47Enricher",
         "authors": [
@@ -88,7 +88,7 @@ plugins = [
     {
         "url": f"{BASE_URL}/AiSubtitleTranslator.cs3",
         "status": 1,
-        "version": 2,
+        "version": 3,
         "name": "AI Subtitle Translator",
         "internalName": "AiSubtitleTranslator",
         "authors": [
@@ -152,6 +152,30 @@ for idx, p in enumerate(plugins):
     }
     with open(os.path.join(fdir, "repo.json"), "w", encoding="utf-8") as f:
         json.dump(sub_repo, f, indent=4, ensure_ascii=False)
+
+# Synchronize root dist/ directory
+import shutil
+root_dist = os.path.join(ROOT_DIR, "dist")
+os.makedirs(root_dist, exist_ok=True)
+ai_cs3_source = os.path.join(ROOT_DIR, "AiSubtitleTranslator", "dist", "AiSubtitleTranslator.cs3")
+if os.path.exists(ai_cs3_source):
+    shutil.copy2(ai_cs3_source, os.path.join(root_dist, "AiSubtitleTranslator.cs3"))
+
+ai_plugin_entry = [p for p in plugins if p["internalName"] == "AiSubtitleTranslator"]
+with open(os.path.join(root_dist, "plugins.json"), "w", encoding="utf-8") as f:
+    json.dump(ai_plugin_entry, f, indent=4, ensure_ascii=False)
+
+ai_repo = {
+    "name": "AI Subtitle Translator Repo",
+    "iconUrl": "https://translate.google.com/favicon.ico",
+    "description": "Kho tiện ích mở rộng dịch phụ đề tự động bằng AI trực tiếp trên CloudStream",
+    "manifestVersion": 1,
+    "pluginLists": [
+        f"{BASE_URL}/plugins.json"
+    ]
+}
+with open(os.path.join(root_dist, "repo.json"), "w", encoding="utf-8") as f:
+    json.dump(ai_repo, f, indent=4, ensure_ascii=False)
 
 print("[+] Successfully generated plugins.json and repo.json for all extensions!")
 
