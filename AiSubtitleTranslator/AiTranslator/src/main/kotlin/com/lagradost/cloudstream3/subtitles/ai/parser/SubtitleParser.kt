@@ -36,7 +36,16 @@ class SubtitleParser {
         }
 
         /**
-         * Parses raw subtitle file content (.srt or .vtt) into a list of SubtitleCue objects.
+         * Detects whether the content represents Advanced SubStation Alpha (.ass / .ssa) subtitle format.
+         */
+        fun isAssContent(content: String): Boolean {
+            return content.contains("[Events]", ignoreCase = true) ||
+                   content.contains("[Script Info]", ignoreCase = true) ||
+                   content.contains("Dialogue:", ignoreCase = true)
+        }
+
+        /**
+         * Parses raw subtitle file content (.srt, .vtt, or .ass/.ssa) into a list of SubtitleCue objects.
          */
         fun parse(rawContent: String): List<SubtitleCue> {
             val sanitized = rawContent
@@ -44,8 +53,15 @@ class SubtitleParser {
                 .replace("\r\n", "\n")
                 .replace('\r', '\n')
 
+            if (isAssContent(sanitized)) {
+                val assResult = parseAss(sanitized)
+                if (assResult.isNotEmpty()) return assResult
+            }
+
             val matches = TIMING_LINE_REGEX.findAll(sanitized).toList()
-            if (matches.isEmpty()) return emptyList()
+            if (matches.isEmpty()) {
+                return emptyList()
+            }
 
             val resultCues = ArrayList<SubtitleCue>(matches.size)
 
@@ -112,6 +128,98 @@ class SubtitleParser {
                 )
             }
 
+            return resultCues
+        }
+
+        /**
+         * Parses ASS/SSA timestamp format H:MM:SS.CC or MM:SS.CC into milliseconds.
+         */
+        fun parseAssTimestampToMs(timeStr: String): Long {
+            val parts = timeStr.trim().split(":")
+            if (parts.size < 2) return 0L
+            val (h, m, sWithMs) = if (parts.size >= 3) {
+                Triple(parts[0].toLongOrNull() ?: 0L, parts[1].toLongOrNull() ?: 0L, parts[2])
+            } else {
+                Triple(0L, parts[0].toLongOrNull() ?: 0L, parts[1])
+            }
+            val sParts = sWithMs.split(".")
+            val sec = sParts[0].toLongOrNull() ?: 0L
+            val ms = if (sParts.size > 1) {
+                sParts[1].padEnd(3, '0').take(3).toLongOrNull() ?: 0L
+            } else 0L
+            return (h * 3600_000L) + (m * 60_000L) + (sec * 1000L) + ms
+        }
+
+        /**
+         * Parses Advanced SubStation Alpha (.ass / .ssa) subtitle content into SubtitleCue objects.
+         */
+        fun parseAss(rawContent: String): List<SubtitleCue> {
+            val lines = rawContent.lines()
+            var inEvents = false
+            var formatColumns: List<String>? = null
+            var startIndex = 1
+            var endIndex = 2
+            var textIndex = 9
+
+            val resultCues = ArrayList<SubtitleCue>()
+
+            for (line in lines) {
+                val trimmed = line.trim()
+                if (trimmed.startsWith("[Events]", ignoreCase = true)) {
+                    inEvents = true
+                    continue
+                } else if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                    inEvents = false
+                    continue
+                }
+
+                if (inEvents || trimmed.startsWith("Dialogue:", ignoreCase = true) || trimmed.startsWith("Format:", ignoreCase = true)) {
+                    if (trimmed.startsWith("Format:", ignoreCase = true)) {
+                        val header = trimmed.substringAfter(":").trim()
+                        formatColumns = header.split(",").map { it.trim().lowercase() }
+                        startIndex = formatColumns.indexOf("start").takeIf { it >= 0 } ?: 1
+                        endIndex = formatColumns.indexOf("end").takeIf { it >= 0 } ?: 2
+                        textIndex = formatColumns.indexOf("text").takeIf { it >= 0 } ?: (formatColumns.size - 1).coerceAtLeast(3)
+                        continue
+                    }
+
+                    if (trimmed.startsWith("Dialogue:", ignoreCase = true)) {
+                        val content = trimmed.substringAfter(":").trim()
+                        val limit = formatColumns?.size ?: 10
+                        val parts = content.split(",", limit = limit)
+                        if (parts.size > textIndex) {
+                            val startMs = parseAssTimestampToMs(parts.getOrElse(startIndex) { "" })
+                            val endMs = parseAssTimestampToMs(parts.getOrElse(endIndex) { "" })
+                            val rawDialogue = parts[textIndex]
+                                .replace("\\N", "\n")
+                                .replace("\\n", "\n")
+                                .replace("\\h", " ")
+                                .trim()
+                            if (rawDialogue.isBlank()) continue
+
+                            val tagMap = LinkedHashMap<String, String>()
+                            var tagCounter = 1
+                            val maskedDialogue = TAG_SHIELD_REGEX.replace(rawDialogue) { tagMatch ->
+                                val placeholder = "[[TAG_${tagCounter++}]]"
+                                tagMap[placeholder] = tagMatch.value
+                                placeholder
+                            }
+
+                            resultCues.add(
+                                SubtitleCue(
+                                    index = resultCues.size + 1,
+                                    startMs = startMs,
+                                    endMs = endMs,
+                                    cueSettings = null,
+                                    rawText = rawDialogue,
+                                    maskedText = maskedDialogue,
+                                    tagMap = tagMap
+                                )
+                            )
+                        }
+                    }
+                }
+            }
             return resultCues
         }
     }

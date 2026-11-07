@@ -34,18 +34,35 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
         get() = baseApi
         set(value) { baseApi = value }
 
-    init {
-        this.name = baseApi.name
-        this.mainUrl = baseApi.mainUrl
-        this.lang = baseApi.lang
-    }
+    // Dynamic property delegation to baseApi
+    override var name: String
+        get() = baseApi.name
+        set(value) { baseApi.name = value }
 
-    // Live property delegation to baseApi
+    override var mainUrl: String
+        get() = baseApi.mainUrl
+        set(value) { baseApi.mainUrl = value }
+
+    override var lang: String
+        get() = baseApi.lang
+        set(value) { baseApi.lang = value }
+
     override val hasMainPage: Boolean get() = baseApi.hasMainPage
     override val hasQuickSearch: Boolean get() = baseApi.hasQuickSearch
     override val supportedTypes: Set<TvType> get() = baseApi.supportedTypes
     override val vpnStatus: VPNStatus get() = baseApi.vpnStatus
     override val providerType: ProviderType get() = baseApi.providerType
+    override val instantLinkLoading: Boolean get() = baseApi.instantLinkLoading
+    override val hasChromecastSupport: Boolean get() = baseApi.hasChromecastSupport
+    override val hasDownloadSupport: Boolean get() = baseApi.hasDownloadSupport
+    override val usesWebView: Boolean get() = baseApi.usesWebView
+    override val supportedSyncNames: Set<SyncIdName> get() = baseApi.supportedSyncNames
+    override val mainPage: List<com.lagradost.cloudstream3.MainPageData> get() = baseApi.mainPage
+    override val loadLinksTimeoutMs: Long? get() = baseApi.loadLinksTimeoutMs
+    override val getMainPageTimeoutMs: Long? get() = baseApi.getMainPageTimeoutMs
+    override val searchTimeoutMs: Long? get() = baseApi.searchTimeoutMs
+    override val quickSearchTimeoutMs: Long? get() = baseApi.quickSearchTimeoutMs
+    override val loadTimeoutMs: Long? get() = baseApi.loadTimeoutMs
 
     // Method delegation
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? =
@@ -54,11 +71,18 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse>? =
         baseApi.search(query)
 
+    override suspend fun search(query: String, page: Int): com.lagradost.cloudstream3.SearchResponseList? =
+        baseApi.search(query, page)
+
     override suspend fun quickSearch(query: String): List<SearchResponse>? =
         baseApi.quickSearch(query)
 
     override suspend fun load(url: String): LoadResponse? =
         baseApi.load(url)
+
+    override suspend fun extractorVerifierJob(extractorData: String?) {
+        baseApi.extractorVerifierJob(extractorData)
+    }
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? =
         baseApi.getVideoInterceptor(extractorLink)
@@ -81,9 +105,9 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
-    ): Boolean = withContext(Dispatchers.IO) {
+    ): Boolean {
         if (!TranslatorConfig.isEnabled) {
-            return@withContext try {
+            return try {
                 baseApi.loadLinks(data, isCasting, subtitleCallback, callback)
             } catch (t: Throwable) {
                 logE(TAG, "Unwrapped baseApi.loadLinks failed: ${t.message}", t)
@@ -94,10 +118,12 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
         // Cancel any active translation session from previous playback
         activeSession?.cancelSession()
 
+        val ctx = TranslatorConfig.appContext ?: AITranslatorHook.appContext
         val session = AITranslationSession(
             mediaPayload = data,
             targetLang = TranslatorConfig.targetLanguage,
-            playerSubtitleCallback = subtitleCallback
+            playerSubtitleCallback = subtitleCallback,
+            context = ctx
         )
         activeSession = session
 
@@ -118,7 +144,7 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
         }
 
         // CRASH BARRIER: Wrap inner provider invocation in try-catch
-        try {
+        return try {
             baseApi.loadLinks(data, isCasting, interceptingSubtitleCallback, callback)
         } catch (t: Throwable) {
             logE(TAG, "Inner provider crashed during loadLinks: ${t.message}", t)

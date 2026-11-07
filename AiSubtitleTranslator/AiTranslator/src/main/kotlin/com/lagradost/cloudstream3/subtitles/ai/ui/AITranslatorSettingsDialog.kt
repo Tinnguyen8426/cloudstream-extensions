@@ -411,10 +411,17 @@ object AITranslatorSettingsDialog {
                     val title: String
                     val message: String
                     if (result.success) {
+                        // Auto-persist verified credentials immediately
+                        TranslatorConfig.provider = selectedProvider
+                        TranslatorConfig.apiKey = key
+                        TranslatorConfig.customBaseUrl = baseUrl
+                        TranslatorConfig.modelName = model
+                        TranslatorConfig.save(context)
+
                         title = "✓ Ping Test Thành Công"
                         val sample = result.translations.values.firstOrNull() ?: "OK"
                         message = "Kết nối thành công tới $selectedProvider (${elapsed}ms)!\nModel: $effectiveModel\nPhản hồi dịch thử: '$sample'"
-                        showToast(context, "Ping thành công (${elapsed}ms)")
+                        showToast(context, "Ping thành công (${elapsed}ms) & đã lưu thông tin xác thực")
                     } else if (result.isQuotaExhausted) {
                         title = "✗ Lỗi Hạn Mức Quota"
                         message = "Tài khoản API đã hết hạn mức (Resource Exhausted):\n${result.error}"
@@ -498,48 +505,58 @@ object AITranslatorSettingsDialog {
         // =====================================================================
         // Dialog Action Buttons (Save, Reset, Close)
         // =====================================================================
+        val saveCurrentConfig = {
+            // 1. Extract values
+            TranslatorConfig.isEnabled = enableCheckBox.isChecked
+            val rawTarget = targetLangInput.text?.toString()?.trim() ?: "vi"
+            TranslatorConfig.targetLanguage = if (rawTarget.isNotBlank()) rawTarget else "vi"
+
+            TranslatorConfig.deliveryStrategy = if (deliveryRadioGroup.checkedRadioButtonId == rbStrategySkeleton.id) {
+                TranslatorConfig.DELIVERY_STRATEGY_B
+            } else {
+                TranslatorConfig.DELIVERY_STRATEGY_A
+            }
+
+            TranslatorConfig.sourcePriorityMode = when (priorityRadioGroup.checkedRadioButtonId) {
+                rbPriorityAuto.id -> TranslatorConfig.PRIORITY_AUTO
+                rbPriorityWestern.id -> TranslatorConfig.PRIORITY_ENGLISH_FIRST
+                rbPriorityCustom.id -> TranslatorConfig.PRIORITY_CUSTOM
+                else -> TranslatorConfig.PRIORITY_ANIME_FIRST
+            }
+            TranslatorConfig.customPriorityList = customPriorityInput.text?.toString()?.trim() ?: "ja, en"
+
+            TranslatorConfig.provider = when (providerRadioGroup.checkedRadioButtonId) {
+                rbProviderOpenAI.id -> TranslatorConfig.PROVIDER_OPENAI
+                rbProviderAnthropic.id -> TranslatorConfig.PROVIDER_ANTHROPIC
+                rbProviderCustom.id -> TranslatorConfig.PROVIDER_CUSTOM
+                else -> TranslatorConfig.PROVIDER_GEMINI
+            }
+
+            val key = apiKeyInput.text?.toString()?.trim() ?: ""
+            if (key.isNotBlank()) {
+                TranslatorConfig.apiKey = key
+            }
+            TranslatorConfig.customBaseUrl = customBaseUrlInput.text?.toString()?.trim() ?: ""
+            TranslatorConfig.modelName = customModelInput.text?.toString()?.trim() ?: ""
+
+            val rawChunk = chunkSizeInput.text?.toString()?.toIntOrNull() ?: 30
+            TranslatorConfig.chunkSize = rawChunk.coerceIn(10, 80)
+
+            TranslatorConfig.preserveSdh = sdhCheckBox.isChecked
+            TranslatorConfig.customGlossary = glossaryInput.text?.toString()?.trim() ?: ""
+
+            // 2. Persist to SharedPreferences
+            TranslatorConfig.save(context)
+        }
+
         val builder = AlertDialog.Builder(context)
             .setTitle("Cài đặt AI Subtitle Translator")
             .setView(scrollView)
+            .setOnCancelListener {
+                saveCurrentConfig()
+            }
             .setPositiveButton("Lưu cấu hình") { dialog, _ ->
-                // 1. Extract values
-                TranslatorConfig.isEnabled = enableCheckBox.isChecked
-                val rawTarget = targetLangInput.text?.toString()?.trim() ?: "vi"
-                TranslatorConfig.targetLanguage = if (rawTarget.isNotBlank()) rawTarget else "vi"
-
-                TranslatorConfig.deliveryStrategy = if (deliveryRadioGroup.checkedRadioButtonId == rbStrategySkeleton.id) {
-                    TranslatorConfig.DELIVERY_STRATEGY_B
-                } else {
-                    TranslatorConfig.DELIVERY_STRATEGY_A
-                }
-
-                TranslatorConfig.sourcePriorityMode = when (priorityRadioGroup.checkedRadioButtonId) {
-                    rbPriorityAuto.id -> TranslatorConfig.PRIORITY_AUTO
-                    rbPriorityWestern.id -> TranslatorConfig.PRIORITY_ENGLISH_FIRST
-                    rbPriorityCustom.id -> TranslatorConfig.PRIORITY_CUSTOM
-                    else -> TranslatorConfig.PRIORITY_ANIME_FIRST
-                }
-                TranslatorConfig.customPriorityList = customPriorityInput.text?.toString()?.trim() ?: "ja, en"
-
-                TranslatorConfig.provider = when (providerRadioGroup.checkedRadioButtonId) {
-                    rbProviderOpenAI.id -> TranslatorConfig.PROVIDER_OPENAI
-                    rbProviderAnthropic.id -> TranslatorConfig.PROVIDER_ANTHROPIC
-                    rbProviderCustom.id -> TranslatorConfig.PROVIDER_CUSTOM
-                    else -> TranslatorConfig.PROVIDER_GEMINI
-                }
-
-                TranslatorConfig.apiKey = apiKeyInput.text?.toString()?.trim() ?: ""
-                TranslatorConfig.customBaseUrl = customBaseUrlInput.text?.toString()?.trim() ?: ""
-                TranslatorConfig.modelName = customModelInput.text?.toString()?.trim() ?: ""
-
-                val rawChunk = chunkSizeInput.text?.toString()?.toIntOrNull() ?: 30
-                TranslatorConfig.chunkSize = rawChunk.coerceIn(10, 80)
-
-                TranslatorConfig.preserveSdh = sdhCheckBox.isChecked
-                TranslatorConfig.customGlossary = glossaryInput.text?.toString()?.trim() ?: ""
-
-                // 2. Persist to SharedPreferences
-                TranslatorConfig.save(context)
+                saveCurrentConfig()
                 showToast(context, "Đã lưu cài đặt AI Subtitle Translator!")
                 dialog.dismiss()
             }
@@ -550,6 +567,7 @@ object AITranslatorSettingsDialog {
                 dialog.dismiss()
             }
             .setNegativeButton("Đóng") { dialog, _ ->
+                saveCurrentConfig()
                 dialog.dismiss()
             }
 

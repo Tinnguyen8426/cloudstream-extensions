@@ -32,6 +32,7 @@ object TranslatorConfig {
     const val STRATEGY_AUTO = "auto"
 
     // Configuration Fields with Production Defaults
+    @Volatile var appContext: Context? = null
     @Volatile var isEnabled: Boolean = true
     @Volatile var targetLanguage: String = "vi"
     @Volatile var sourcePriorityMode: String = PRIORITY_ANIME_FIRST
@@ -49,6 +50,7 @@ object TranslatorConfig {
      * Initializes configuration by loading saved values from Android SharedPreferences.
      */
     fun init(context: Context) {
+        appContext = try { context.applicationContext ?: context } catch (_: Throwable) { context }
         try {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             isEnabled = prefs.getBoolean("key_enabled", true)
@@ -72,6 +74,7 @@ object TranslatorConfig {
      * Persists current configuration to Android SharedPreferences.
      */
     fun save(context: Context) {
+        appContext = try { context.applicationContext ?: context } catch (_: Throwable) { context }
         try {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             prefs.edit().apply {

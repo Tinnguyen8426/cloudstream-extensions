@@ -1,5 +1,6 @@
 package com.lagradost.cloudstream3.subtitles.ai.hook
 
+import android.content.Context
 import android.util.Log
 import com.lagradost.cloudstream3.APIHolder
 import com.lagradost.cloudstream3.MainAPI
@@ -14,6 +15,7 @@ import java.util.IdentityHashMap
  */
 object AITranslatorHook {
     private const val TAG = "AITranslatorHook"
+    @Volatile var appContext: Context? = null
     private val DELEGATE_GETTERS = listOf("getBaseApi", "getOriginal", "getDelegate", "getBase", "getInner")
     private val PREFERRED_FIELDS = listOf("baseApi", "original", "delegate", "base", "inner")
 
@@ -191,7 +193,7 @@ object AITranslatorHook {
     @Synchronized
     fun scanAndHoistHooks() {
         val allProviders = APIHolder.allProviders
-        synchronized(allProviders) {
+        allProviders.withLock {
             for (i in 0 until allProviders.size) {
                 val current = allProviders.getOrNull(i) ?: continue
                 val base = getBaseProvider(current)
@@ -222,10 +224,17 @@ object AITranslatorHook {
 
                 // 3. Synchronize CloudStream Plugin Mapping for Search & Bookmarks
                 try {
+                    APIHolder.removePluginMapping(current)
+                } catch (_: Throwable) {}
+                try {
+                    APIHolder.removePluginMapping(cleanChain)
+                } catch (_: Throwable) {}
+                try {
                     APIHolder.addPluginMapping(hoisted)
                 } catch (t: Throwable) {
                     logW(TAG, "Failed to update plugin mapping for ${hoisted.name}: ${t.message}")
                 }
+                logI(TAG, "Successfully attached AI Subtitle Translator to provider: ${base.name}")
             }
         }
     }
@@ -236,7 +245,7 @@ object AITranslatorHook {
      */
     fun detachHooks() {
         val allProviders = APIHolder.allProviders
-        synchronized(allProviders) {
+        allProviders.withLock {
             for (i in 0 until allProviders.size) {
                 val current = allProviders.getOrNull(i) ?: continue
                 val unwrapped = unwrapAITranslatorChain(current)
@@ -248,6 +257,10 @@ object AITranslatorHook {
                 }
             }
         }
+    }
+
+    private fun logI(tag: String, msg: String) {
+        try { Log.i(tag, msg) } catch (_: Throwable) { println("[$tag] [INFO] $msg") }
     }
 
     private fun logW(tag: String, msg: String) {

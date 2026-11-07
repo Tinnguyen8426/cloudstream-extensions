@@ -1,6 +1,8 @@
 package com.lagradost.cloudstream3.subtitles.ai.cache
 
 import android.content.Context
+import android.util.Log
+import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
@@ -54,8 +56,9 @@ object SubtitleCacheManager {
     // =========================================================================
 
     fun getBaseDir(context: Context? = null): File {
+        val effectiveCtx = context ?: TranslatorConfig.appContext
         val base = customBaseDir
-            ?: context?.let { File(it.filesDir, "ai_sub_cache") }
+            ?: effectiveCtx?.let { File(it.filesDir, "ai_sub_cache") }
             ?: File(System.getProperty("java.io.tmpdir", "."), "ai_sub_cache")
         if (!base.exists()) {
             base.mkdirs()
@@ -209,6 +212,13 @@ object SubtitleCacheManager {
             clearChunks(context, cacheKey)
 
             return destFile
+        } catch (e: Throwable) {
+            try {
+                Log.e("SubtitleCacheManager", "Failed to save full subtitle file: ${e.message}", e)
+            } catch (_: Throwable) {
+                System.err.println("[SubtitleCacheManager] [ERROR] Failed to save full subtitle file: ${e.message}")
+            }
+            throw e
         } finally {
             if (tempFile.exists()) {
                 try {
@@ -226,15 +236,23 @@ object SubtitleCacheManager {
      * Saves a completed chunk mapping of cue index to translated text.
      */
     fun saveChunk(context: Context? = null, cacheKey: String, chunkIndex: Int, items: Map<Int, String>) {
-        val episodeChunkDir = File(getChunksDir(context), cacheKey).apply {
-            if (!exists()) mkdirs()
-        }
-        val chunkFile = File(episodeChunkDir, "chunk_%04d.json".format(chunkIndex))
-        val json = mapper.writeValueAsString(items)
-        chunkFile.writeText(json, Charsets.UTF_8)
         try {
-            episodeChunkDir.setLastModified(System.currentTimeMillis())
-        } catch (_: Throwable) {}
+            val episodeChunkDir = File(getChunksDir(context), cacheKey).apply {
+                if (!exists()) mkdirs()
+            }
+            val chunkFile = File(episodeChunkDir, "chunk_%04d.json".format(chunkIndex))
+            val json = mapper.writeValueAsString(items)
+            chunkFile.writeText(json, Charsets.UTF_8)
+            try {
+                episodeChunkDir.setLastModified(System.currentTimeMillis())
+            } catch (_: Throwable) {}
+        } catch (e: Throwable) {
+            try {
+                Log.e("SubtitleCacheManager", "Failed to save chunk $chunkIndex: ${e.message}", e)
+            } catch (_: Throwable) {
+                System.err.println("[SubtitleCacheManager] [ERROR] Failed to save chunk $chunkIndex: ${e.message}")
+            }
+        }
     }
 
     /**

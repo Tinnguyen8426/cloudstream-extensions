@@ -2,6 +2,7 @@ package com.lagradost.cloudstream3.subtitles.ai.server
 
 import android.content.Context
 import com.lagradost.cloudstream3.subtitles.ai.cache.SubtitleCacheManager
+import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -67,15 +68,16 @@ object AITranslatorLocalServer {
      */
     @Synchronized
     fun start(context: Context? = null): Int {
+        val effectiveCtx = context ?: storedContext ?: TranslatorConfig.appContext
         if (isRunning && listeningPort > 0) {
-            if (context != null) storedContext = context
+            if (effectiveCtx != null) storedContext = effectiveCtx
             return listeningPort
         }
 
         try {
             stop() // Clean up any lingering sockets or threads
 
-            storedContext = context
+            storedContext = effectiveCtx
             val socket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
             serverSocket = socket
             listeningPort = socket.localPort
@@ -219,18 +221,25 @@ object AITranslatorLocalServer {
             }
 
             // 4. Resolve candidate full directory & canonical validation
-            val baseDir = customBaseDir ?: SubtitleCacheManager.getBaseDir(storedContext)
+            val effectiveCtx = storedContext ?: TranslatorConfig.appContext
+            val baseDir = customBaseDir ?: SubtitleCacheManager.getBaseDir(effectiveCtx)
             val fullDir = if (baseDir.name == "full") baseDir else File(baseDir, "full").apply { if (!exists()) mkdirs() }
 
             // Path Traversal Protection: reject files outside authorized fullDir (e.g. /sub/../../secret.txt or drive letter injection)
             var targetFile: File? = null
-            val isAuthorized = try {
-                val canonDir = fullDir.canonicalFile
-                val candidate = File(fullDir, fileName).canonicalFile
-                targetFile = candidate
-                candidate != canonDir && candidate.toPath().normalize().startsWith(canonDir.toPath().normalize())
-            } catch (_: Throwable) {
-                false
+            val registeredCandidate = registeredFiles[fileName] ?: registeredFiles[rawFileName]
+            val isAuthorized = if (registeredCandidate != null && registeredCandidate.exists()) {
+                targetFile = registeredCandidate
+                true
+            } else {
+                try {
+                    val canonDir = fullDir.canonicalFile
+                    val candidate = File(fullDir, fileName).canonicalFile
+                    targetFile = candidate
+                    candidate != canonDir && candidate.toPath().normalize().startsWith(canonDir.toPath().normalize())
+                } catch (_: Throwable) {
+                    false
+                }
             }
 
             if (!isAuthorized || targetFile == null) {

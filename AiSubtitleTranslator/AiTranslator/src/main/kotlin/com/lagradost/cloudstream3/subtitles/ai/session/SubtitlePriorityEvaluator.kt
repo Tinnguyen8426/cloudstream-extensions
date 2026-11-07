@@ -107,9 +107,12 @@ object SubtitlePriorityEvaluator {
      */
     fun isJapanese(lang: String): Boolean {
         val clean = lang.trim().lowercase(Locale.ROOT)
-        return clean == "ja" || clean == "jp" || clean == "jpn" ||
+        val tokens = clean.split(Regex("[^a-zA-Z0-9]+"))
+        return tokens.contains("ja") || tokens.contains("jp") || tokens.contains("jpn") || tokens.contains("jap") ||
                 clean.startsWith("ja-") || clean.startsWith("jp-") || clean.startsWith("ja_") ||
-                clean.contains("japan") || clean.contains("tiếng nhật") || clean.contains("ti?ng nh?t") || clean.contains("nihongo")
+                clean.contains("japan") || clean.contains("tiếng nhật") || clean.contains("tieng nhat") ||
+                clean.contains("ti?ng nh?t") || clean.contains("nihongo") || clean.contains("japsub") ||
+                clean.contains("jap sub")
     }
 
     /**
@@ -119,7 +122,9 @@ object SubtitlePriorityEvaluator {
         val clean = lang.trim().lowercase(Locale.ROOT)
         val tokens = clean.split(Regex("[^a-zA-Z0-9]+"))
         return tokens.contains("en") || tokens.contains("eng") || tokens.contains("english") ||
-                clean.contains("tiếng anh") || clean.contains("ti?ng anh") || clean.startsWith("en-") || clean.startsWith("en_")
+                clean.contains("tiếng anh") || clean.contains("tieng anh") || clean.contains("ti?ng anh") ||
+                clean.startsWith("en-") || clean.startsWith("en_") || clean.contains("engsub") ||
+                clean.contains("eng sub")
     }
 
     /**
@@ -129,7 +134,10 @@ object SubtitlePriorityEvaluator {
         val clean = lang.trim().lowercase(Locale.ROOT)
         val tokens = clean.split(Regex("[^a-zA-Z0-9]+"))
         return tokens.contains("vi") || tokens.contains("vie") || tokens.contains("vietnamese") ||
-                clean.contains("tiếng việt") || clean.contains("ti?ng vi?t") || clean.startsWith("vi-") || clean.startsWith("vi_")
+                tokens.contains("viet") || tokens.contains("vn") || tokens.contains("vnm") ||
+                clean.contains("tiếng việt") || clean.contains("tieng viet") || clean.contains("ti?ng vi?t") ||
+                clean.contains("vietsub") || clean.contains("viet sub") || clean.contains("việt sub") ||
+                clean.startsWith("vi-") || clean.startsWith("vi_")
     }
 
     /**
@@ -139,7 +147,8 @@ object SubtitlePriorityEvaluator {
         val clean = lang.trim().lowercase(Locale.ROOT)
         val tokens = clean.split(Regex("[^a-zA-Z0-9]+"))
         return tokens.contains("es") || tokens.contains("spa") || tokens.contains("spanish") ||
-                clean.contains("tiếng tây ban nha") || clean.startsWith("es-") || clean.startsWith("es_")
+                tokens.contains("espanol") || clean.contains("tiếng tây ban nha") || clean.contains("tieng tay ban nha") ||
+                clean.contains("español") || clean.contains("spansub") || clean.startsWith("es-") || clean.startsWith("es_")
     }
 
     /**
@@ -149,7 +158,8 @@ object SubtitlePriorityEvaluator {
         val clean = lang.trim().lowercase(Locale.ROOT)
         val tokens = clean.split(Regex("[^a-zA-Z0-9]+"))
         return tokens.contains("fr") || tokens.contains("fra") || tokens.contains("fre") || tokens.contains("french") ||
-                clean.contains("tiếng pháp") || clean.startsWith("fr-") || clean.startsWith("fr_")
+                clean.contains("tiếng pháp") || clean.contains("tieng phap") || clean.contains("français") ||
+                clean.contains("francais") || clean.startsWith("fr-") || clean.startsWith("fr_")
     }
 
     /**
@@ -159,7 +169,8 @@ object SubtitlePriorityEvaluator {
         val clean = lang.trim().lowercase(Locale.ROOT)
         val tokens = clean.split(Regex("[^a-zA-Z0-9]+"))
         return tokens.contains("zh") || tokens.contains("chi") || tokens.contains("zho") || tokens.contains("chinese") ||
-                clean.contains("tiếng trung") || clean.startsWith("zh-") || clean.startsWith("zh_")
+                clean.contains("tiếng trung") || clean.contains("tieng trung") || clean.contains("chinesesub") ||
+                clean.startsWith("zh-") || clean.startsWith("zh_")
     }
 
     /**
@@ -169,7 +180,8 @@ object SubtitlePriorityEvaluator {
         val clean = lang.trim().lowercase(Locale.ROOT)
         val tokens = clean.split(Regex("[^a-zA-Z0-9]+"))
         return tokens.contains("ko") || tokens.contains("kor") || tokens.contains("korean") ||
-                clean.contains("tiếng hàn") || clean.startsWith("ko-") || clean.startsWith("ko_")
+                clean.contains("tiếng hàn") || clean.contains("tieng han") || clean.contains("koreansub") ||
+                clean.startsWith("ko-") || clean.startsWith("ko_")
     }
 
     /**

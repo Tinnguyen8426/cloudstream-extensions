@@ -32,16 +32,20 @@ class AITranslatorPlugin : Plugin() {
     override fun load(context: Context) {
         logI(TAG, "Initializing AI Subtitle Translator Plugin...")
 
+        val appCtx = context.applicationContext ?: context
+        TranslatorConfig.appContext = appCtx
+        AITranslatorHook.appContext = appCtx
+
         // 1. Initialize persistent configuration from SharedPreferences
         try {
-            TranslatorConfig.init(context)
+            TranslatorConfig.init(appCtx)
         } catch (e: Throwable) {
             logW(TAG, "Failed initializing TranslatorConfig: ${e.message}")
         }
 
         // 2. Start embedded HTTP loopback server for ExoPlayer streaming
         try {
-            val serverPort = AITranslatorLocalServer.start(context)
+            val serverPort = AITranslatorLocalServer.start(appCtx)
             logI(TAG, "AITranslatorLocalServer active on port: $serverPort")
         } catch (e: Throwable) {
             logW(TAG, "Failed starting local loopback server: ${e.message}")
