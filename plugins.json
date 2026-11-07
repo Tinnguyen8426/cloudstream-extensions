@@ -2,14 +2,14 @@
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/StremioSubEnricher.cs3",
         "status": 1,
-        "version": 2,
+        "version": 3,
         "name": "Stremio Subtitle Enricher",
         "internalName": "StremioSubEnricher",
         "authors": [
             "Stremio Subtitle Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề đa ngôn ngữ từ Kitsu, OpenSubtitles v3 và Cinemeta vào CloudStream",
-        "fileSize": 68687,
+        "fileSize": 69346,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "en",
         "tvTypes": [
@@ -21,19 +21,19 @@
         ],
         "iconUrl": "https://stremio.com/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-e5de5d09742048276619298e4c4ebc268b11125e77173f7b650db53fdd1cedd9"
+        "fileHash": "sha256-efa813d32b96e031fbd275724e24b9bc7aabd8f5eff859d76b6976dbd0152c3d"
     },
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/KitsunekkoEnricher.cs3",
         "status": 1,
-        "version": 2,
+        "version": 3,
         "name": "Kitsunekko Japanese Subtitle Enricher",
         "internalName": "KitsunekkoEnricher",
         "authors": [
             "Kitsunekko Japanese Subtitle Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề tiếng Nhật (.ass, .srt, .zip) từ Kitsunekko vào CloudStream",
-        "fileSize": 81865,
+        "fileSize": 82517,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "ja",
         "tvTypes": [
@@ -43,19 +43,19 @@
         ],
         "iconUrl": "https://kitsunekko.net/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-6ff0eba88d7229f3eacf8d39afe98bc2960fbaa16e8b000d7cdf11c260a18262"
+        "fileHash": "sha256-0b55ca146ea2af73de877cb6073722af4c2ca0e7dd25b6ae023f1e1590447dc1"
     },
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/Anime47Enricher.cs3",
         "status": 1,
-        "version": 4,
+        "version": 5,
         "name": "Anime47 Subtitle Enricher",
         "internalName": "Anime47Enricher",
         "authors": [
             "Anime47 Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề Tiếng Việt (softsub) từ Anime47 vào CloudStream (tương thích hoàn hảo với Torrentio, TorraStream, StremioX, AnimePahe...)",
-        "fileSize": 62681,
+        "fileSize": 63424,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "vi",
         "tvTypes": [
@@ -65,19 +65,19 @@
         ],
         "iconUrl": "https://anime47.best/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-dff495d5002a3bc35efd6be598e26fb07549b7c64969c8096b7d136988aff86a"
+        "fileHash": "sha256-736cb9bade8afbe2a97214cbadecbf59ba75a3b838905d1f2acc381e36671cc8"
     },
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/AiSubtitleTranslator.cs3",
         "status": 1,
-        "version": 3,
+        "version": 4,
         "name": "AI Subtitle Translator",
         "internalName": "AiSubtitleTranslator",
         "authors": [
             "AI Subtitle Translator"
         ],
         "description": "Dịch phụ đề phim tự động bằng AI (Gemini, OpenAI, Claude) trực tiếp trên CloudStream với độ trễ 0ms và hỗ trợ xử lý ngữ cảnh đa ngôn ngữ",
-        "fileSize": 101534,
+        "fileSize": 102376,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "vi",
         "tvTypes": [
@@ -91,6 +91,6 @@
         ],
         "iconUrl": "https://translate.google.com/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-337b2a6045a3b7009d2902b65ef315b7dae23f5f6645f5966992d7fa0bc4025f"
+        "fileHash": "sha256-ad9618f637429e0fd4073c6f27e423a290d395b4a43688af1a3a897f1afbd063"
     }
 ]
