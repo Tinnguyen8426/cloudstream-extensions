@@ -66,5 +66,31 @@
         "iconUrl": "https://anime47.best/favicon.ico",
         "apiVersion": 1,
         "fileHash": "sha256-163af14d62155d79c5e17ad15cc7fb7fda2d12caaca7e03890d0f8df17679284"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/AiSubtitleTranslator.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "AI Subtitle Translator",
+        "internalName": "AiSubtitleTranslator",
+        "authors": [
+            "AI Subtitle Translator"
+        ],
+        "description": "Dịch phụ đề phim tự động bằng AI (Gemini, OpenAI, Claude) trực tiếp trên CloudStream với độ trễ 0ms và hỗ trợ xử lý ngữ cảnh đa ngôn ngữ",
+        "fileSize": 86107,
+        "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
+        "language": "vi",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA",
+            "Movie",
+            "TvSeries",
+            "AsianDrama",
+            "Live"
+        ],
+        "iconUrl": "https://translate.google.com/favicon.ico",
+        "apiVersion": 1,
+        "fileHash": "sha256-d459ce8236badcb5b6eba0b10d32e20aa87e9bca5985485c866e090a4279c65a"
     }
 ]

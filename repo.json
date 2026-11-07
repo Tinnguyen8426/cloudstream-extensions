@@ -1,7 +1,7 @@
 {
     "name": "CloudStream Subtitle Enrichers",
     "iconUrl": "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
-    "description": "Kho tiện ích mở rộng tự động cào và nhúng phụ đề đa ngôn ngữ (Stremio, Kitsunekko, Anime47) vào CloudStream",
+    "description": "Kho tiện ích mở rộng tự động cào và nhúng phụ đề đa ngôn ngữ (Stremio, Kitsunekko, Anime47, AiSubtitleTranslator) vào CloudStream",
     "manifestVersion": 1,
     "pluginLists": [
         "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/plugins.json"
