@@ -28,7 +28,10 @@ object AITranslatorHook {
      * Supports direct references, getter inspection, and declared field traversal.
      */
     fun getInnerDelegate(provider: MainAPI): MainAPI? {
-        if (provider is AITranslatorEnrichedMainAPI) return provider.baseApi
+        if (provider is AITranslatorEnrichedMainAPI) {
+            val b = provider.baseApi
+            return if (b !== provider) b else null
+        }
 
         val clazz = provider.javaClass
 
@@ -155,7 +158,9 @@ object AITranslatorHook {
                 logW(TAG, "Cycle detected in leading AI wrapper chain at ${current.name}")
                 return current
             }
-            val inner = if (current is AITranslatorEnrichedMainAPI) current.baseApi else getInnerDelegate(current)
+            val inner = if (current is AITranslatorEnrichedMainAPI) {
+                if (current.baseApi !== current) current.baseApi else null
+            } else getInnerDelegate(current)
             if (inner == null || inner === current) {
                 return current
             }

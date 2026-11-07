@@ -104,7 +104,7 @@ class AITranslationSession(
         if (isCancelled || isTargetLanguageBypassed || isCompleted) return
         if (failedUrls.contains(subFile.url)) return
         if (subFile.url.contains("127.0.0.1") || subFile.url.contains("localhost") || subFile.lang.contains("[AI", ignoreCase = true)) return
-        if (candidateList.any { it.url == subFile.url }) return
+        if (candidateList.any { it.url == subFile.url && it.lang == subFile.lang }) return
 
         val score = SubtitlePriorityEvaluator.calculateScore(
             subFile = subFile,
@@ -693,7 +693,7 @@ class AITranslationSession(
         try {
             Handler(Looper.getMainLooper()).post {
                 try {
-                    val act = try { CommonActivity.INSTANCE.activity } catch (_: Throwable) { null }
+                    val act = try { CommonActivity.activity } catch (_: Throwable) { null }
                     if (act != null) {
                         try {
                             CommonActivity.showToast(act, message, duration)

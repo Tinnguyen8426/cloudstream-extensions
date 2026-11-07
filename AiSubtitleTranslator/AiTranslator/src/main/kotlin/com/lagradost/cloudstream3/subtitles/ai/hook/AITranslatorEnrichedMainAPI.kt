@@ -36,16 +36,22 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
 
     // Dynamic property delegation to baseApi
     override var name: String
-        get() = baseApi.name
-        set(value) { baseApi.name = value }
+        get() = if (baseApi === this) "AITranslatorEnrichedMainAPI" else baseApi.name
+        set(value) {
+            if (baseApi !== this) baseApi.name = value
+        }
 
     override var mainUrl: String
-        get() = baseApi.mainUrl
-        set(value) { baseApi.mainUrl = value }
+        get() = if (baseApi === this) "" else baseApi.mainUrl
+        set(value) {
+            if (baseApi !== this) baseApi.mainUrl = value
+        }
 
     override var lang: String
-        get() = baseApi.lang
-        set(value) { baseApi.lang = value }
+        get() = if (baseApi === this) "en" else baseApi.lang
+        set(value) {
+            if (baseApi !== this) baseApi.lang = value
+        }
 
     override val hasMainPage: Boolean get() = baseApi.hasMainPage
     override val hasQuickSearch: Boolean get() = baseApi.hasQuickSearch

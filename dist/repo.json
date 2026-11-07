@@ -1,7 +1,7 @@
 {
     "name": "AI Subtitle Translator Repo",
     "iconUrl": "https://translate.google.com/favicon.ico",
-    "description": "Dịch phụ đề phim tự động bằng AI (Gemini, OpenAI, Claude) trực tiếp trên CloudStream với độ trễ 0ms và hỗ trợ xử lý ngữ cảnh đa ngôn ngữ",
+    "description": "Kho tiện ích mở rộng dịch phụ đề tự động bằng AI trực tiếp trên CloudStream",
     "manifestVersion": 1,
     "pluginLists": [
         "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/plugins.json"
