@@ -226,16 +226,16 @@ class AITranslationSession(
             delay(INTAKE_DEBOUNCE_MS)
             if (!isActive || isCancelled) return@withContext
 
-            val targetName = getTargetLanguageDisplayName(targetLang)
-            showToast("[AI Translator] Bắt đầu dịch phụ đề sang $targetName...")
-            logI(TAG, "Starting translation pipeline for candidate '${candidate.lang}' (${candidate.url})")
-
             val isCustomLocal = TranslatorConfig.provider == TranslatorConfig.PROVIDER_CUSTOM && TranslatorConfig.customBaseUrl.isNotBlank()
             if (clientOverride == null && TranslatorConfig.apiKey.isBlank() && !isCustomLocal) {
                 logE(TAG, "AI Translator API key is missing. Please configure your API key in Settings.")
-                showToast("[AI Translator] Lỗi: Chưa cấu hình API Key trong Cài đặt.")
+                showToast("[AI Translator] Chưa cấu hình API Key trong Cài đặt.")
                 return@withContext
             }
+
+            val targetName = getTargetLanguageDisplayName(targetLang)
+            showToast("[AI Translator] Bắt đầu dịch phụ đề sang $targetName...")
+            logI(TAG, "Starting translation pipeline for candidate '${candidate.lang}' (${candidate.url})")
 
             // Step 1: Download raw subtitle bytes
             val rawBytes = fetchSubtitleBytes(candidate.url, candidate.headers)
@@ -686,41 +686,32 @@ class AITranslationSession(
     }
 
     private fun showToast(message: String, duration: Int = Toast.LENGTH_SHORT) {
-        val act = try { CommonActivity.activity } catch (_: Throwable) { null }
-        if (act != null) {
-            try {
-                act.runOnUiThread {
-                    try {
-                        CommonActivity.showToast(act, message, duration)
-                    } catch (_: Throwable) {
-                        try {
-                            Toast.makeText(act, message, duration).show()
-                        } catch (_: Throwable) {
-                            println("[AITranslatorToast] $message")
-                        }
-                    }
-                }
-                return
-            } catch (_: Throwable) {}
-        }
-
         val ctx = context ?: TranslatorConfig.appContext ?: try {
             com.lagradost.cloudstream3.CloudStreamApp.Companion.context
         } catch (_: Throwable) { null }
-        if (ctx != null) {
-            try {
-                Handler(Looper.getMainLooper()).post {
-                    try {
+
+        try {
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    val act = try { CommonActivity.INSTANCE.activity } catch (_: Throwable) { null }
+                    if (act != null) {
+                        try {
+                            CommonActivity.showToast(act, message, duration)
+                            return@post
+                        } catch (_: Throwable) {}
+                    }
+                    if (ctx != null) {
                         Toast.makeText(ctx, message, duration).show()
-                    } catch (_: Throwable) {
+                    } else {
                         println("[AITranslatorToast] $message")
                     }
+                } catch (_: Throwable) {
+                    println("[AITranslatorToast] $message")
                 }
-                return
-            } catch (_: Throwable) {}
+            }
+        } catch (_: Throwable) {
+            println("[AITranslatorToast] $message")
         }
-
-        println("[AITranslatorToast] $message")
     }
 
     private fun buildAuthoritativeTrackLabel(lang: String, model: String): String {

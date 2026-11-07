@@ -2,6 +2,8 @@ package com.lagradost.cloudstream3.subtitles.ai.ui
 
 import android.app.AlertDialog
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
@@ -46,7 +48,13 @@ object AITranslatorSettingsDialog {
      */
     private fun showToast(context: Context, message: String, duration: Int = Toast.LENGTH_SHORT) {
         try {
-            Toast.makeText(context, message, duration).show()
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    Toast.makeText(context, message, duration).show()
+                } catch (_: Throwable) {
+                    println("[AITranslatorToast] $message")
+                }
+            }
         } catch (_: Throwable) {
             println("[AITranslatorToast] $message")
         }

@@ -106,6 +106,8 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        logI(TAG, "loadLinks invoked for provider '${baseApi.name}', enabled=${TranslatorConfig.isEnabled}")
+
         if (!TranslatorConfig.isEnabled) {
             return try {
                 baseApi.loadLinks(data, isCasting, subtitleCallback, callback)
@@ -127,7 +129,11 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
         )
         activeSession = session
 
+        var candidateCount = 0
         val interceptingSubtitleCallback: (SubtitleFile) -> Unit = { subFile ->
+            candidateCount++
+            logI(TAG, "Intercepted subtitle from '${baseApi.name}': lang='${subFile.lang}', url='${subFile.url}'")
+
             // PATH 1: SYNCHRONOUS 0ms PASSTHROUGH TO PLAYER
             try {
                 subtitleCallback(subFile)
@@ -144,7 +150,7 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
         }
 
         // CRASH BARRIER: Wrap inner provider invocation in try-catch
-        return try {
+        val result = try {
             baseApi.loadLinks(data, isCasting, interceptingSubtitleCallback, callback)
         } catch (t: Throwable) {
             logE(TAG, "Inner provider crashed during loadLinks: ${t.message}", t)
@@ -152,6 +158,12 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
             activeSession = null
             false
         }
+
+        logI(TAG, "baseApi.loadLinks for '${baseApi.name}' finished (result=$result, candidateCount=$candidateCount)")
+        if (candidateCount == 0) {
+            logW(TAG, "Provider '${baseApi.name}' produced 0 subtitle candidates. For torrents, ensure external subtitle enrichers like StremioSubtitleEnricher are installed.")
+        }
+        return result
     }
 
     private fun logI(tag: String, msg: String) {

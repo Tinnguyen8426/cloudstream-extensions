@@ -206,10 +206,21 @@ object AITranslatorHook {
                 }
 
                 // If current head is already our wrapper, ensure inner chain is clean
-                if (current is AITranslatorEnrichedMainAPI) {
-                    val cleanInner = unwrapAITranslatorChain(current.baseApi)
-                    if (cleanInner !== current.baseApi) {
-                        current.baseApi = cleanInner
+                if (current.javaClass.name.contains("AITranslatorEnrichedMainAPI")) {
+                    val aiWrapper = current as? AITranslatorEnrichedMainAPI
+                    if (aiWrapper != null) {
+                        val cleanInner = unwrapAITranslatorChain(aiWrapper.baseApi)
+                        if (cleanInner !== aiWrapper.baseApi) {
+                            aiWrapper.baseApi = cleanInner
+                        }
+                    } else {
+                        val inner = getInnerDelegate(current)
+                        if (inner != null) {
+                            val cleanInner = unwrapAITranslatorChain(inner)
+                            if (cleanInner !== inner) {
+                                setInnerDelegate(current, inner, cleanInner)
+                            }
+                        }
                     }
                     continue
                 }
@@ -223,12 +234,6 @@ object AITranslatorHook {
                 allProviders[i] = hoisted
 
                 // 3. Synchronize CloudStream Plugin Mapping for Search & Bookmarks
-                try {
-                    APIHolder.removePluginMapping(current)
-                } catch (_: Throwable) {}
-                try {
-                    APIHolder.removePluginMapping(cleanChain)
-                } catch (_: Throwable) {}
                 try {
                     APIHolder.addPluginMapping(hoisted)
                 } catch (t: Throwable) {
