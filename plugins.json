@@ -77,7 +77,7 @@
             "AI Subtitle Translator"
         ],
         "description": "Dịch phụ đề phim tự động bằng AI (Gemini, OpenAI, Claude) trực tiếp trên CloudStream với độ trễ 0ms và hỗ trợ xử lý ngữ cảnh đa ngôn ngữ",
-        "fileSize": 96822,
+        "fileSize": 96886,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "vi",
         "tvTypes": [
@@ -91,6 +91,6 @@
         ],
         "iconUrl": "https://translate.google.com/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-b0b15b66efa30e36023bf5b8540e4dad69c63843c850f117d78796ee5859d3a5"
+        "fileHash": "sha256-8d94fc2d929bc4fc1fb89b9eb4da8e54c463d8db64f8bf5624686b6a60c0303c"
     }
 ]

@@ -119,6 +119,7 @@ class AITranslationSession(
             isTargetLanguageBypassed = true
             cancelCurrentJob()
             candidateList.clear()
+            showToast("[AI Translator] Đã có sẵn phụ đề ${subFile.lang}, bỏ qua dịch AI.")
             return
         }
 
