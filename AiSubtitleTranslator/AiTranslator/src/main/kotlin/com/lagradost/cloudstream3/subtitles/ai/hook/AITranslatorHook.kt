@@ -191,6 +191,36 @@ object AITranslatorHook {
     }
 
     /**
+     * Safely synchronizes provider mapping in APIHolder.apis:
+     * 1. Purges any pre-existing entries (base provider or prior wrappers) with matching name.
+     * 2. Appends the new canonical wrapper via APIHolder.addPluginMapping.
+     * Ensures exactly ONE entry per provider exists in APIHolder.apis and UI source list.
+     */
+    fun syncPluginMapping(provider: MainAPI) {
+        try {
+            APIHolder.apis.withLock {
+                APIHolder.apis = APIHolder.apis.filter { it.name != provider.name }
+            }
+            APIHolder.addPluginMapping(provider)
+        } catch (_: Throwable) {
+            try {
+                APIHolder.addPluginMapping(provider)
+            } catch (_: Throwable) {}
+        }
+    }
+
+    /**
+     * Atomically deduplicates APIHolder.apis by provider name to eliminate duplicate source listings.
+     */
+    fun deduplicateApis() {
+        try {
+            APIHolder.apis.withLock {
+                APIHolder.apis = APIHolder.apis.distinctBy { it.name }
+            }
+        } catch (_: Throwable) {}
+    }
+
+    /**
      * Scans APIHolder.allProviders, un-buries any enclosed AI translator instances,
      * and hoists AITranslatorEnrichedMainAPI to the outermost position (Head).
      * Synchronizes APIHolder.addPluginMapping for Search, Bookmarks, and Deep Links.
@@ -199,6 +229,18 @@ object AITranslatorHook {
     fun scanAndHoistHooks() {
         val allProviders = APIHolder.allProviders
         allProviders.withLock {
+            // 1. Prune duplicate provider names in allProviders
+            val seenNames = mutableSetOf<String>()
+            var idx = 0
+            while (idx < allProviders.size) {
+                val p = allProviders.getOrNull(idx) ?: break
+                if (!seenNames.add(p.name)) {
+                    allProviders.removeAt(idx)
+                } else {
+                    idx++
+                }
+            }
+
             for (i in 0 until allProviders.size) {
                 val current = allProviders.getOrNull(i) ?: continue
                 val base = getBaseProvider(current)
@@ -227,6 +269,7 @@ object AITranslatorHook {
                             }
                         }
                     }
+                    syncPluginMapping(current)
                     continue
                 }
 
@@ -238,15 +281,12 @@ object AITranslatorHook {
                 val hoisted = AITranslatorEnrichedMainAPI(cleanChain)
                 allProviders[i] = hoisted
 
-                // 3. Synchronize CloudStream Plugin Mapping for Search & Bookmarks
-                try {
-                    APIHolder.addPluginMapping(hoisted)
-                } catch (t: Throwable) {
-                    logW(TAG, "Failed to update plugin mapping for ${hoisted.name}: ${t.message}")
-                }
+                // 3. Synchronize CloudStream Plugin Mapping for Search & Bookmarks without duplicates
+                syncPluginMapping(hoisted)
                 logI(TAG, "Successfully attached AI Subtitle Translator to provider: ${base.name}")
             }
         }
+        deduplicateApis()
     }
 
     /**
@@ -261,12 +301,11 @@ object AITranslatorHook {
                 val unwrapped = unwrapAITranslatorChain(current)
                 if (unwrapped !== current) {
                     allProviders[i] = unwrapped
-                    try {
-                        APIHolder.addPluginMapping(unwrapped)
-                    } catch (_: Throwable) {}
+                    syncPluginMapping(unwrapped)
                 }
             }
         }
+        deduplicateApis()
     }
 
     private fun logI(tag: String, msg: String) {

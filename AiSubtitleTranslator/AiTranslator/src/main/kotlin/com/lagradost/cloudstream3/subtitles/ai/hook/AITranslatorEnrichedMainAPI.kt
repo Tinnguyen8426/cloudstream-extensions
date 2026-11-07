@@ -53,6 +53,36 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
             if (baseApi !== this) baseApi.lang = value
         }
 
+    override var storedCredentials: String?
+        get() = if (baseApi === this) null else baseApi.storedCredentials
+        set(value) {
+            if (baseApi !== this) baseApi.storedCredentials = value
+        }
+
+    override var canBeOverridden: Boolean
+        get() = if (baseApi === this) true else baseApi.canBeOverridden
+        set(value) {
+            if (baseApi !== this) baseApi.canBeOverridden = value
+        }
+
+    override var sequentialMainPage: Boolean
+        get() = if (baseApi === this) false else baseApi.sequentialMainPage
+        set(value) {
+            if (baseApi !== this) baseApi.sequentialMainPage = value
+        }
+
+    override var sequentialMainPageDelay: Long
+        get() = if (baseApi === this) 0L else baseApi.sequentialMainPageDelay
+        set(value) {
+            if (baseApi !== this) baseApi.sequentialMainPageDelay = value
+        }
+
+    override var sequentialMainPageScrollDelay: Long
+        get() = if (baseApi === this) 0L else baseApi.sequentialMainPageScrollDelay
+        set(value) {
+            if (baseApi !== this) baseApi.sequentialMainPageScrollDelay = value
+        }
+
     override val hasMainPage: Boolean get() = baseApi.hasMainPage
     override val hasQuickSearch: Boolean get() = baseApi.hasQuickSearch
     override val supportedTypes: Set<TvType> get() = baseApi.supportedTypes
@@ -70,31 +100,109 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
     override val quickSearchTimeoutMs: Long? get() = baseApi.quickSearchTimeoutMs
     override val loadTimeoutMs: Long? get() = baseApi.loadTimeoutMs
 
-    // Method delegation
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? =
-        baseApi.getMainPage(page, request)
-
-    override suspend fun search(query: String): List<SearchResponse>? =
-        baseApi.search(query)
-
-    override suspend fun search(query: String, page: Int): com.lagradost.cloudstream3.SearchResponseList? =
-        baseApi.search(query, page)
-
-    override suspend fun quickSearch(query: String): List<SearchResponse>? =
-        baseApi.quickSearch(query)
-
-    override suspend fun load(url: String): LoadResponse? =
-        baseApi.load(url)
-
-    override suspend fun extractorVerifierJob(extractorData: String?) {
-        baseApi.extractorVerifierJob(extractorData)
+    private fun sanitizeMainPageRequest(request: MainPageRequest, baseUrl: String): MainPageRequest {
+        val rawData = request.data
+        val base = baseUrl.trimEnd('/')
+        val isAbsolute = rawData.startsWith("http://", ignoreCase = true) || rawData.startsWith("https://", ignoreCase = true)
+        val safeData = when {
+            isAbsolute -> rawData
+            rawData.isNotBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> {
+                val path = if (rawData.startsWith("/")) rawData else "/$rawData"
+                "$base$path"
+            }
+            rawData.isBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> base
+            else -> rawData
+        }
+        return if (safeData == request.data) request else MainPageRequest(request.name, safeData, request.horizontalImages)
     }
 
-    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? =
-        baseApi.getVideoInterceptor(extractorLink)
+    private fun sanitizeUrl(url: String, baseUrl: String): String {
+        val base = baseUrl.trimEnd('/')
+        val isAbsolute = url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)
+        return when {
+            isAbsolute -> url
+            url.isNotBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> {
+                val path = if (url.startsWith("/")) url else "/$url"
+                "$base$path"
+            }
+            url.isBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> base
+            else -> url
+        }
+    }
 
-    override suspend fun getLoadUrl(name: SyncIdName, id: String): String? =
-        baseApi.getLoadUrl(name, id)
+    // Method delegation with Crash Barrier isolation
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        return try {
+            val safeReq = sanitizeMainPageRequest(request, baseApi.mainUrl)
+            baseApi.getMainPage(page, safeReq)
+        } catch (t: Throwable) {
+            logE(TAG, "Caught leaf provider exception during getMainPage for '${baseApi.name}': ${t.message}", t)
+            null
+        }
+    }
+
+    override suspend fun search(query: String): List<SearchResponse>? {
+        return try {
+            baseApi.search(query)
+        } catch (t: Throwable) {
+            logE(TAG, "Caught leaf provider exception during search for '${baseApi.name}': ${t.message}", t)
+            null
+        }
+    }
+
+    override suspend fun search(query: String, page: Int): com.lagradost.cloudstream3.SearchResponseList? {
+        return try {
+            baseApi.search(query, page)
+        } catch (t: Throwable) {
+            logE(TAG, "Caught leaf provider exception during paginated search for '${baseApi.name}': ${t.message}", t)
+            null
+        }
+    }
+
+    override suspend fun quickSearch(query: String): List<SearchResponse>? {
+        return try {
+            baseApi.quickSearch(query)
+        } catch (t: Throwable) {
+            logE(TAG, "Caught leaf provider exception during quickSearch for '${baseApi.name}': ${t.message}", t)
+            null
+        }
+    }
+
+    override suspend fun load(url: String): LoadResponse? {
+        return try {
+            val safeUrl = sanitizeUrl(url, baseApi.mainUrl)
+            baseApi.load(safeUrl)
+        } catch (t: Throwable) {
+            logE(TAG, "Caught leaf provider exception during load for '${baseApi.name}': ${t.message}", t)
+            null
+        }
+    }
+
+    override suspend fun extractorVerifierJob(extractorData: String?) {
+        try {
+            baseApi.extractorVerifierJob(extractorData)
+        } catch (t: Throwable) {
+            logE(TAG, "Error in extractorVerifierJob for '${baseApi.name}': ${t.message}", t)
+        }
+    }
+
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        return try {
+            baseApi.getVideoInterceptor(extractorLink)
+        } catch (t: Throwable) {
+            logE(TAG, "Error in getVideoInterceptor for '${baseApi.name}': ${t.message}", t)
+            null
+        }
+    }
+
+    override suspend fun getLoadUrl(name: SyncIdName, id: String): String? {
+        return try {
+            baseApi.getLoadUrl(name, id)
+        } catch (t: Throwable) {
+            logE(TAG, "Error in getLoadUrl for '${baseApi.name}': ${t.message}", t)
+            null
+        }
+    }
 
     @Volatile var activeSession: AITranslationSession? = null
 

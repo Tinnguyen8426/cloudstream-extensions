@@ -17,6 +17,7 @@ import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MovieLoadResponse
 import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageData
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
@@ -143,6 +144,9 @@ object MultiEnricherCoexistenceTest {
         testTimeoutResilience4500ms()
         testAntiRecursionGuardsAndIdempotency()
         testMetadataDelegationAcrossChain()
+        testMainPageDelegationAcross24Permutations()
+        testCrashBarrierIsolationOnSchemelessUrl()
+        testAPIHolderApisDeduplication()
 
         println("================================================================================")
         println(" MULTI-ENRICHER SUITE SUMMARY: $passed PASSED, $failed FAILED")
@@ -645,5 +649,256 @@ object MultiEnricherCoexistenceTest {
         val kitsunekkoCache = KitsunekkoHook.latestLoadedShow
         assertTrue("Kitsunekko latestLoadedShow cached", kitsunekkoCache != null)
         assertEquals("Kitsunekko cached title matches", "Sousou no Frieren", kitsunekkoCache?.title)
+    }
+
+    // =========================================================================
+    // Test 8: MainPage Delegation Across All 24 Permutations
+    // =========================================================================
+    private fun testMainPageDelegationAcross24Permutations() {
+        println("\n>>> Test 8: MainPage Delegation Across All 24 Permutations")
+
+        val expectedCategories = listOf(
+            MainPageData("Trending", "https://mock.stream/trending", false),
+            MainPageData("Bollywood", "https://mock.stream/bollywood", false),
+            MainPageData("Hollywood", "hollywood", false)
+        )
+
+        class CustomMainPageProvider : MockBaseTorrentioProvider("PermutationBase", "https://mock.stream") {
+            override val mainPage: List<MainPageData> = expectedCategories
+        }
+
+        val enricherBuilders: List<(MainAPI) -> MainAPI> = listOf(
+            { base -> Anime47Hook.EnrichedMainAPI(base) },
+            { base -> StremioSubHook.StremioEnrichedMainAPI(base) },
+            { base -> KitsunekkoHook.KitsunekkoEnrichedMainAPI(base) },
+            { base -> AITranslatorEnrichedMainAPI(base) }
+        )
+
+        fun <T> permutations(list: List<T>): List<List<T>> {
+            if (list.size <= 1) return listOf(list)
+            val result = mutableListOf<List<T>>()
+            for (i in list.indices) {
+                val element = list[i]
+                val rest = list.filterIndexed { index, _ -> index != i }
+                for (subPerm in permutations(rest)) {
+                    result.add(listOf(element) + subPerm)
+                }
+            }
+            return result
+        }
+
+        val allPerms = permutations(enricherBuilders)
+        assertEquals("Permutation count is 4! = 24", 24, allPerms.size)
+
+        var matchedCount = 0
+        for (perm in allPerms) {
+            val leaf = CustomMainPageProvider()
+            var head: MainAPI = leaf
+            for (builder in perm) {
+                head = builder(head)
+            }
+            if (head.mainPage == expectedCategories && head.name == "PermutationBase" && head.mainUrl == "https://mock.stream") {
+                matchedCount++
+            }
+        }
+
+        assertEquals("All 24 permutations preserved leaf mainPage categories exactly", 24, matchedCount)
+    }
+
+    // =========================================================================
+    // Test 9: Crash Barrier Isolation on Schemeless / Malformed URL & Exceptions
+    // =========================================================================
+    private fun testCrashBarrierIsolationOnSchemelessUrl() = runBlocking {
+        println("\n>>> Test 9: Crash Barrier Isolation on Schemeless / Malformed URL & Leaf Exceptions")
+
+        val crashingLeaf = object : MainAPI() {
+            init {
+                name = "VegaMoviesMock"
+                mainUrl = "https://vegamovies.im"
+            }
+
+            override val mainPage: List<MainPageData> = listOf(
+                MainPageData("Category", "", false)
+            )
+
+            override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+                if (!request.data.startsWith("http://") && !request.data.startsWith("https://")) {
+                    throw IllegalArgumentException("Expected URL scheme 'http' or 'https' but no scheme was found for ${request.data}")
+                }
+                return null
+            }
+
+            override suspend fun search(query: String): List<SearchResponse>? {
+                throw IllegalArgumentException("Expected URL scheme 'http' or 'https' but no scheme was found for search")
+            }
+
+            override suspend fun quickSearch(query: String): List<SearchResponse>? {
+                throw IllegalArgumentException("Expected URL scheme 'http' or 'https' but no scheme was found for quickSearch")
+            }
+
+            override suspend fun load(url: String): LoadResponse? {
+                if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                    throw IllegalArgumentException("Expected URL scheme 'http' or 'https' but no scheme was found for $url")
+                }
+                return null
+            }
+        }
+
+        val anime47 = Anime47Hook.EnrichedMainAPI(crashingLeaf)
+        val kitsunekko = KitsunekkoHook.KitsunekkoEnrichedMainAPI(anime47)
+        val stremio = StremioSubHook.StremioEnrichedMainAPI(kitsunekko)
+        val aiTranslator = AITranslatorEnrichedMainAPI(stremio)
+
+        // 1. Invoking getMainPage with relative data is safely normalized against mainUrl
+        val normalizedReq = MainPageRequest("Home", "movies", false)
+        val responseNormalized = try {
+            aiTranslator.getMainPage(1, normalizedReq)
+        } catch (t: Throwable) {
+            "THREW: ${t.javaClass.simpleName} - ${t.message}"
+        }
+        assertTrue("Normalized request did not throw unhandled exception", responseNormalized == null)
+
+        // 2. Invoking getMainPage with forced crashing leaf isolates exception via crash barrier
+        val crashingLeafForced = object : MainAPI() {
+            init {
+                name = "AlwaysCrashingLeaf"
+                mainUrl = "NONE"
+            }
+            override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+                throw IllegalArgumentException("Expected URL scheme 'http' or 'https' but no scheme was found for ")
+            }
+            override suspend fun search(query: String): List<SearchResponse>? {
+                throw IllegalArgumentException("Expected URL scheme 'http' or 'https' but no scheme was found for search")
+            }
+            override suspend fun quickSearch(query: String): List<SearchResponse>? {
+                throw IllegalArgumentException("Expected URL scheme 'http' or 'https' but no scheme was found for quickSearch")
+            }
+            override suspend fun load(url: String): LoadResponse? {
+                throw IllegalArgumentException("Expected URL scheme 'http' or 'https' but no scheme was found for load")
+            }
+        }
+
+        val chain2 = AITranslatorEnrichedMainAPI(
+            StremioSubHook.StremioEnrichedMainAPI(
+                KitsunekkoHook.KitsunekkoEnrichedMainAPI(
+                    Anime47Hook.EnrichedMainAPI(crashingLeafForced)
+                )
+            )
+        )
+
+        var caughtMainPage: Throwable? = null
+        val mainPageRes = try {
+            chain2.getMainPage(1, MainPageRequest("", "", false))
+        } catch (t: Throwable) {
+            caughtMainPage = t
+            null
+        }
+        assertTrue("Crash Barrier trapped IllegalArgumentException on getMainPage (returned null)", caughtMainPage == null && mainPageRes == null)
+
+        var caughtSearch: Throwable? = null
+        val searchRes = try {
+            chain2.search("test")
+        } catch (t: Throwable) {
+            caughtSearch = t
+            null
+        }
+        assertTrue("Crash Barrier trapped IllegalArgumentException on search (returned null)", caughtSearch == null && searchRes == null)
+
+        var caughtQuickSearch: Throwable? = null
+        val quickSearchRes = try {
+            chain2.quickSearch("test")
+        } catch (t: Throwable) {
+            caughtQuickSearch = t
+            null
+        }
+        assertTrue("Crash Barrier trapped IllegalArgumentException on quickSearch (returned null)", caughtQuickSearch == null && quickSearchRes == null)
+
+        var caughtLoad: Throwable? = null
+        val loadRes = try {
+            chain2.load("/relative/path")
+        } catch (t: Throwable) {
+            caughtLoad = t
+            null
+        }
+        assertTrue("Crash Barrier trapped IllegalArgumentException on load (returned null)", caughtLoad == null && loadRes == null)
+    }
+
+    // =========================================================================
+    // Test 10: APIHolder.apis Provider Deduplication (Single Source Per Provider)
+    // =========================================================================
+    private fun testAPIHolderApisDeduplication() {
+        println("\n>>> Test 10: APIHolder.apis Provider Deduplication Across 4 Hooks")
+
+        resetAllEnricherHooks()
+        val allProviders = APIHolder.allProviders
+        allProviders.clear()
+
+        val pVega = MockBaseTorrentioProvider("VegaMovies", "https://vegamovies.im")
+        val pTorrentio = MockBaseTorrentioProvider("Torrentio", "https://torrentio.strem.fun")
+        val pAnimePahe = MockBaseTorrentioProvider("AnimePahe", "https://animepahe.ru")
+
+        allProviders.add(pVega)
+        allProviders.add(pTorrentio)
+        allProviders.add(pAnimePahe)
+
+        try {
+            APIHolder.apis.withLock {
+                APIHolder.apis = APIHolder.apis.filter { false }
+            }
+            for (p in allProviders) {
+                APIHolder.addPluginMapping(p)
+            }
+        } catch (_: Throwable) {}
+
+        assertEquals("Initial APIHolder.apis has 3 base providers", 3, APIHolder.apis.size)
+
+        // Run all 4 hooks repeatedly across multiple cycles to simulate background polling
+        for (cycle in 1..3) {
+            Anime47Hook.scanAndHookProviders()
+            KitsunekkoHook.scanAndHookProviders()
+            StremioSubHook.scanAndHookProviders()
+            AITranslatorHook.scanAndHoistHooks()
+        }
+
+        // Verify APIHolder.allProviders has exactly 3 providers
+        assertEquals("APIHolder.allProviders has exactly 3 providers", 3, allProviders.size)
+
+        // CRITICAL CHECK FOR ISSUE 2: APIHolder.apis must NOT duplicate sources!
+        assertEquals(
+            "APIHolder.apis size matches APIHolder.allProviders size (exactly 3, not 12 or 15)",
+            3,
+            APIHolder.apis.size
+        )
+
+        val apiNames = APIHolder.apis.map { it.name }
+        val distinctNames = apiNames.distinct()
+        assertEquals(
+            "APIHolder.apis contains zero duplicate provider names: $apiNames",
+            distinctNames.size,
+            apiNames.size
+        )
+        assertTrue("Contains VegaMovies", distinctNames.contains("VegaMovies"))
+        assertTrue("Contains Torrentio", distinctNames.contains("Torrentio"))
+        assertTrue("Contains AnimePahe", distinctNames.contains("AnimePahe"))
+
+        // Verify each entry in APIHolder.apis is the hoisted AITranslatorEnrichedMainAPI
+        for (api in APIHolder.apis) {
+            assertTrue("Provider '${api.name}' in APIHolder.apis is AITranslatorEnrichedMainAPI",
+                api is AITranslatorEnrichedMainAPI)
+        }
+
+        // Verify detaching hooks maintains deduplication and restores original or unwrapped providers
+        resetAllEnricherHooks()
+        assertEquals(
+            "After detaching all hooks, APIHolder.apis remains deduplicated with exactly 3 providers",
+            3,
+            APIHolder.apis.size
+        )
+        val detachedNames = APIHolder.apis.map { it.name }
+        assertEquals(
+            "APIHolder.apis names distinct after detach: $detachedNames",
+            detachedNames.distinct().size,
+            detachedNames.size
+        )
     }
 }
