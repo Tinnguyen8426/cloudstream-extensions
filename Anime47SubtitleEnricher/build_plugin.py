@@ -205,7 +205,7 @@ def main():
     manifest_data = {
         "pluginClassName": "com.anime47.enricher.Anime47Plugin",
         "name": "Anime47Enricher",
-        "version": 4,
+        "version": 5,
         "requiresResources": False
     }
     manifest_file = os.path.join(CACHE_DIR, "manifest.json")
@@ -232,7 +232,7 @@ def main():
         {
             "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/Anime47Enricher.cs3",
             "status": 1,
-            "version": 4,
+            "version": 5,
             "name": "Anime47 Subtitle Enricher",
             "internalName": "Anime47Enricher",
             "authors": [

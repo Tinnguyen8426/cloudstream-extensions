@@ -23,6 +23,7 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.newMovieLoadResponse
+import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import kotlinx.coroutines.CompletableDeferred
@@ -147,6 +148,7 @@ object MultiEnricherCoexistenceTest {
         testMainPageDelegationAcross24Permutations()
         testCrashBarrierIsolationOnSchemelessUrl()
         testAPIHolderApisDeduplication()
+        testNonHttpAndJsonPayloadPreservation()
 
         println("================================================================================")
         println(" MULTI-ENRICHER SUITE SUMMARY: $passed PASSED, $failed FAILED")
@@ -900,5 +902,105 @@ object MultiEnricherCoexistenceTest {
             detachedNames.distinct().size,
             detachedNames.size
         )
+    }
+
+    // =========================================================================
+    // Test 11: Non-HTTP & JSON Payload Preservation in load(url)
+    // =========================================================================
+    private fun testNonHttpAndJsonPayloadPreservation() = runBlocking {
+        println("\n>>> Test 11: Non-HTTP & JSON Payload Preservation in load(url) Across 4-Tier Chain")
+
+        val payloadRecordingLeaf = object : MainAPI() {
+            init {
+                name = "PayloadRecordingProvider"
+                mainUrl = "https://api.themoviedb.org"
+            }
+            var lastReceivedLoadUrl: String? = null
+            var lastReceivedMainPageData: String? = null
+
+            override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+                lastReceivedMainPageData = request.data
+                return newHomePageResponse(request.name, emptyList<SearchResponse>(), false)
+            }
+
+            override suspend fun load(url: String): LoadResponse? {
+                lastReceivedLoadUrl = url
+                return newMovieLoadResponse(name, url, TvType.Movie, url) {
+                    this.posterUrl = "https://image.tmdb.org/t/p/w500/test.jpg"
+                    this.year = 2024
+                }
+            }
+        }
+
+        val anime47 = Anime47Hook.EnrichedMainAPI(payloadRecordingLeaf)
+        val kitsunekko = KitsunekkoHook.KitsunekkoEnrichedMainAPI(anime47)
+        val stremio = StremioSubHook.StremioEnrichedMainAPI(kitsunekko)
+        val aiTranslator = AITranslatorEnrichedMainAPI(stremio)
+
+        // 1. JSON Object Payload (Exact user defect reproducing string)
+        val tmdbJson = """{"id":822653,"type":"movie","aniId":null,"malId":null}"""
+        val resp1 = aiTranslator.load(tmdbJson)
+        assertTrue("load() returned non-null response for JSON object", resp1 != null)
+        assertEquals("Exact raw JSON object preserved verbatim across 4 layers", tmdbJson, payloadRecordingLeaf.lastReceivedLoadUrl)
+
+        // 2. Formatted JSON with whitespace/newlines
+        val formattedJson = "\n  {\n    \"id\": 822653,\n    \"type\": \"movie\"\n  }\n"
+        val resp2 = aiTranslator.load(formattedJson)
+        assertTrue("load() returned non-null response for formatted JSON", resp2 != null)
+        assertEquals("Formatted JSON preserved verbatim across 4 layers", formattedJson, payloadRecordingLeaf.lastReceivedLoadUrl)
+
+        // 3. JSON Array Payload
+        val jsonArray = """[{"key":"val"}]"""
+        val resp3 = aiTranslator.load(jsonArray)
+        assertTrue("load() returned non-null response for JSON array", resp3 != null)
+        assertEquals("JSON array payload preserved verbatim across 4 layers", jsonArray, payloadRecordingLeaf.lastReceivedLoadUrl)
+
+        // 4. Raw Provider ID (Numeric TMDb ID)
+        val numericId = "822653"
+        val resp4 = aiTranslator.load(numericId)
+        assertTrue("load() returned non-null response for numeric ID", resp4 != null)
+        assertEquals("Numeric ID preserved verbatim across 4 layers", numericId, payloadRecordingLeaf.lastReceivedLoadUrl)
+
+        // 5. Raw IMDb Alphanumeric ID
+        val imdbId = "tt1234567"
+        val resp5 = aiTranslator.load(imdbId)
+        assertTrue("load() returned non-null response for IMDb ID", resp5 != null)
+        assertEquals("IMDb ID preserved verbatim across 4 layers", imdbId, payloadRecordingLeaf.lastReceivedLoadUrl)
+
+        // 6. Custom Scoped Sync Scheme (kitsu:, mal:, tmdb:)
+        val kitsuScheme = "kitsu:12345"
+        val resp6 = aiTranslator.load(kitsuScheme)
+        assertTrue("load() returned non-null response for custom scheme", resp6 != null)
+        assertEquals("Custom scheme URI preserved verbatim across 4 layers", kitsuScheme, payloadRecordingLeaf.lastReceivedLoadUrl)
+
+        // 7. Magnet URI
+        val magnetUri = "magnet:?xt=urn:btih:3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c"
+        val resp7 = aiTranslator.load(magnetUri)
+        assertTrue("load() returned non-null response for magnet URI", resp7 != null)
+        assertEquals("Magnet URI preserved verbatim across 4 layers", magnetUri, payloadRecordingLeaf.lastReceivedLoadUrl)
+
+        // 8. URN URI
+        val urnUri = "urn:movie:822653"
+        val resp8 = aiTranslator.load(urnUri)
+        assertTrue("load() returned non-null response for URN", resp8 != null)
+        assertEquals("URN preserved verbatim across 4 layers", urnUri, payloadRecordingLeaf.lastReceivedLoadUrl)
+
+        // 9. Full HTTPS URL
+        val fullUrl = "https://example.com/movie/822653"
+        val resp9 = aiTranslator.load(fullUrl)
+        assertTrue("load() returned non-null response for full URL", resp9 != null)
+        assertEquals("Full HTTPS URL preserved verbatim across 4 layers", fullUrl, payloadRecordingLeaf.lastReceivedLoadUrl)
+
+        // 10. True Relative URL Path (must still be resolved against baseApi.mainUrl)
+        val relativePath = "/movie/822653"
+        val resp10 = aiTranslator.load(relativePath)
+        assertTrue("load() returned non-null response for relative path", resp10 != null)
+        assertEquals("Relative URL path normalized against mainUrl", "https://api.themoviedb.org/movie/822653", payloadRecordingLeaf.lastReceivedLoadUrl)
+
+        // 11. MainPageRequest with JSON payload data
+        val jsonMainPage = MainPageRequest("Popular", tmdbJson, false)
+        val mpResp = aiTranslator.getMainPage(1, jsonMainPage)
+        assertTrue("getMainPage() returned non-null response for JSON data request", mpResp != null)
+        assertEquals("MainPageRequest JSON data preserved verbatim across 4 layers", tmdbJson, payloadRecordingLeaf.lastReceivedMainPageData)
     }
 }

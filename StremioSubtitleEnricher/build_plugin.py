@@ -197,7 +197,7 @@ def main():
     manifest_data = {
         "pluginClassName": "com.stremio.subenricher.StremioSubPlugin",
         "name": "StremioSubEnricher",
-        "version": 2,
+        "version": 3,
         "requiresResources": False
     }
     manifest_file = os.path.join(CACHE_DIR, "manifest.json")
@@ -224,7 +224,7 @@ def main():
         {
             "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/StremioSubEnricher.cs3",
             "status": 1,
-            "version": 2,
+            "version": 3,
             "name": "Stremio Subtitle Enricher",
             "internalName": "StremioSubEnricher",
             "authors": [

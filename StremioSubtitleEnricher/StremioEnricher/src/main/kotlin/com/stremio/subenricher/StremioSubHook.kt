@@ -395,32 +395,61 @@ object StremioSubHook {
         override val quickSearchTimeoutMs: Long? get() = baseApi.quickSearchTimeoutMs
         override val loadTimeoutMs: Long? get() = baseApi.loadTimeoutMs
 
+        private fun isNonHttpPayload(url: String): Boolean {
+            val trimmed = url.trim()
+            if (trimmed.isEmpty()) return false
+            if (trimmed.startsWith("{") || trimmed.startsWith("[") ||
+                trimmed.startsWith("urn:", ignoreCase = true) ||
+                trimmed.startsWith("magnet:", ignoreCase = true) ||
+                trimmed.startsWith("data:", ignoreCase = true)
+            ) {
+                return true
+            }
+            val colonIdx = trimmed.indexOf(':')
+            if (colonIdx > 0) {
+                val scheme = trimmed.substring(0, colonIdx)
+                if (!scheme.equals("http", ignoreCase = true) && !scheme.equals("https", ignoreCase = true)) {
+                    if (scheme.all { it.isLetterOrDigit() || it == '+' || it == '-' || it == '.' } && scheme[0].isLetter()) {
+                        return true
+                    }
+                }
+            }
+            if (trimmed.all { it.isDigit() } || (trimmed.startsWith("tt") && trimmed.length > 2 && trimmed.substring(2).all { it.isDigit() })) {
+                return true
+            }
+            return false
+        }
+
         private fun sanitizeMainPageRequest(request: MainPageRequest, baseUrl: String): MainPageRequest {
             val rawData = request.data
+            if (isNonHttpPayload(rawData)) return request
+            val trimmed = rawData.trim()
+            val isAbsolute = trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)
+            if (isAbsolute) return request
             val base = baseUrl.trimEnd('/')
-            val isAbsolute = rawData.startsWith("http://", ignoreCase = true) || rawData.startsWith("https://", ignoreCase = true)
             val safeData = when {
-                isAbsolute -> rawData
-                rawData.isNotBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> {
-                    val path = if (rawData.startsWith("/")) rawData else "/$rawData"
+                trimmed.isNotBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> {
+                    val path = if (trimmed.startsWith("/")) trimmed else "/$trimmed"
                     "$base$path"
                 }
-                rawData.isBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> base
+                trimmed.isBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> base
                 else -> rawData
             }
             return if (safeData == request.data) request else MainPageRequest(request.name, safeData, request.horizontalImages)
         }
 
         private fun sanitizeUrl(url: String, baseUrl: String): String {
+            if (isNonHttpPayload(url)) return url
+            val trimmed = url.trim()
+            val isAbsolute = trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)
+            if (isAbsolute) return url
             val base = baseUrl.trimEnd('/')
-            val isAbsolute = url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)
             return when {
-                isAbsolute -> url
-                url.isNotBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> {
-                    val path = if (url.startsWith("/")) url else "/$url"
+                trimmed.isNotBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> {
+                    val path = if (trimmed.startsWith("/")) trimmed else "/$trimmed"
                     "$base$path"
                 }
-                url.isBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> base
+                trimmed.isBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> base
                 else -> url
             }
         }

@@ -213,7 +213,7 @@ def main():
     manifest_data = {
         "pluginClassName": "com.kitsunekko.enricher.KitsunekkoPlugin",
         "name": "KitsunekkoEnricher",
-        "version": 2,
+        "version": 3,
         "requiresResources": False
     }
     manifest_file = os.path.join(CACHE_DIR, "manifest.json")
@@ -240,7 +240,7 @@ def main():
         {
             "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/KitsunekkoEnricher.cs3",
             "status": 1,
-            "version": 2,
+            "version": 3,
             "name": "Kitsunekko Japanese Subtitle Enricher",
             "internalName": "KitsunekkoEnricher",
             "authors": [

@@ -222,7 +222,7 @@ def main():
     manifest_data = {
         "pluginClassName": "com.lagradost.cloudstream3.subtitles.ai.AITranslatorPlugin",
         "name": "AiSubtitleTranslator",
-        "version": 3,
+        "version": 4,
         "requiresResources": False
     }
     manifest_file = os.path.join(CACHE_DIR, "manifest.json")
@@ -253,7 +253,7 @@ def main():
         {
             "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/AiSubtitleTranslator.cs3",
             "status": 1,
-            "version": 3,
+            "version": 4,
             "name": "AI Subtitle Translator",
             "internalName": "AiSubtitleTranslator",
             "authors": [
