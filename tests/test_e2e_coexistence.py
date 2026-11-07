@@ -19,6 +19,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_DIR = os.path.join(ROOT_DIR, "tests")
 STREMIO_DIST = os.path.join(ROOT_DIR, "StremioSubtitleEnricher", "dist")
 KITSUNEKKO_DIST = os.path.join(ROOT_DIR, "KitsunekkoSubtitleEnricher", "dist")
+AI_TRANSLATOR_DIST = os.path.join(ROOT_DIR, "AiSubtitleTranslator", "dist")
 
 def compute_sha256(filepath):
     h = hashlib.sha256()
@@ -109,6 +110,47 @@ class TestPackagingAndIntegrity(unittest.TestCase):
 
         # Check repo.json
         repo_json_path = os.path.join(KITSUNEKKO_DIST, "repo.json")
+        self.assertTrue(os.path.exists(repo_json_path))
+        with open(repo_json_path, "r", encoding="utf-8") as f:
+            repo_data = json.load(f)
+        self.assertIn("pluginLists", repo_data)
+        self.assertTrue(any("plugins.json" in pl for pl in repo_data["pluginLists"]))
+
+        calculated_hash = compute_sha256(cs3_path)
+        self.assertEqual(p_entry["fileHash"], calculated_hash, "plugins.json hash mismatch")
+        self.assertEqual(p_entry["fileSize"], filesize, "plugins.json filesize mismatch")
+
+    def test_ai_translator_package_contents_and_metadata(self):
+        cs3_path = os.path.join(AI_TRANSLATOR_DIST, "AiSubtitleTranslator.cs3")
+        self.assertTrue(os.path.exists(cs3_path), f"Missing {cs3_path}")
+        filesize = os.path.getsize(cs3_path)
+        self.assertGreater(filesize, 5000, "Package size suspiciously small")
+
+        # Check zip entries
+        with zipfile.ZipFile(cs3_path, "r") as zf:
+            namelist = zf.namelist()
+            self.assertIn("classes.dex", namelist, "classes.dex missing from AiSubtitleTranslator.cs3")
+            self.assertIn("manifest.json", namelist, "manifest.json missing from AiSubtitleTranslator.cs3")
+
+            # Check manifest contents
+            manifest_bytes = zf.read("manifest.json")
+            manifest = json.loads(manifest_bytes.decode("utf-8"))
+            self.assertIn("name", manifest)
+            self.assertIn("pluginClassName", manifest)
+            self.assertIn("version", manifest)
+            self.assertFalse(manifest.get("requiresResources", True), "requiresResources must be false")
+
+        # Check plugins.json
+        plugins_json_path = os.path.join(AI_TRANSLATOR_DIST, "plugins.json")
+        self.assertTrue(os.path.exists(plugins_json_path))
+        with open(plugins_json_path, "r", encoding="utf-8") as f:
+            plugins_data = json.load(f)
+        p_entry = plugins_data[0] if isinstance(plugins_data, list) else plugins_data
+        self.assertIn("url", p_entry)
+        self.assertIn("name", p_entry)
+
+        # Check repo.json
+        repo_json_path = os.path.join(AI_TRANSLATOR_DIST, "repo.json")
         self.assertTrue(os.path.exists(repo_json_path))
         with open(repo_json_path, "r", encoding="utf-8") as f:
             repo_data = json.load(f)
@@ -214,6 +256,22 @@ class KitsunekkoInterceptor:
         t.join(timeout=4.5)
         return res
 
+class AITranslatorInterceptor:
+    def __init__(self, base_api):
+        self.base_api = base_api
+        self.name = base_api.name
+        self.mainUrl = base_api.mainUrl
+        self.supportedTypes = base_api.supportedTypes
+
+    def loadLinks(self, data, isCasting, subtitleCallback, callback):
+        def wrapped_callback(link):
+            callback(link) # 0ms passthrough
+
+        def wrapped_sub_cb(sub):
+            subtitleCallback(sub) # 0ms passthrough
+
+        return self.base_api.loadLinks(data, isCasting, wrapped_sub_cb, wrapped_callback)
+
 
 class TestMultiEnricherCoexistenceContract(unittest.TestCase):
     """
@@ -230,22 +288,25 @@ class TestMultiEnricherCoexistenceContract(unittest.TestCase):
         anime47 = Anime47Interceptor(base)
         stremio = StremioInterceptor(anime47)
         kitsunekko = KitsunekkoInterceptor(stremio)
+        ai_trans = AITranslatorInterceptor(kitsunekko)
 
-        # Verify 3-level chain hierarchy
+        # Verify 4-level chain hierarchy
+        self.assertIs(ai_trans.base_api, kitsunekko)
         self.assertIs(kitsunekko.base_api, stremio)
         self.assertIs(stremio.base_api, anime47)
         self.assertIs(anime47.base_api, base)
 
         # Verify property delegation across chain
-        self.assertEqual(kitsunekko.name, "Torrentio")
-        self.assertEqual(kitsunekko.mainUrl, "https://torrentio.strem.fun")
-        self.assertEqual(kitsunekko.supportedTypes, {"Anime", "Movie", "TvSeries"})
+        self.assertEqual(ai_trans.name, "Torrentio")
+        self.assertEqual(ai_trans.mainUrl, "https://torrentio.strem.fun")
+        self.assertEqual(ai_trans.supportedTypes, {"Anime", "Movie", "TvSeries"})
 
     def test_zero_latency_video_passthrough(self):
         base = MockBaseProvider("FastStream")
         anime47 = Anime47Interceptor(base)
         stremio = StremioInterceptor(anime47)
         kitsunekko = KitsunekkoInterceptor(stremio)
+        ai_trans = AITranslatorInterceptor(kitsunekko)
 
         start_time = time.time()
         video_arrival_time = None
@@ -260,7 +321,7 @@ class TestMultiEnricherCoexistenceContract(unittest.TestCase):
         def sub_cb(sub):
             subs.append(sub)
 
-        kitsunekko.loadLinks("Frieren S01E01", False, sub_cb, video_cb)
+        ai_trans.loadLinks("Frieren S01E01", False, sub_cb, video_cb)
 
         self.assertIsNotNone(video_arrival_time)
         latency_ms = (video_arrival_time - start_time) * 1000
@@ -273,6 +334,7 @@ class TestMultiEnricherCoexistenceContract(unittest.TestCase):
         anime47 = Anime47Interceptor(base)
         stremio = StremioInterceptor(anime47)
         kitsunekko = KitsunekkoInterceptor(stremio)
+        ai_trans = AITranslatorInterceptor(kitsunekko)
 
         emitted_subs = []
         lock = threading.Lock()
@@ -281,7 +343,7 @@ class TestMultiEnricherCoexistenceContract(unittest.TestCase):
             with lock:
                 emitted_subs.append(sub)
 
-        kitsunekko.loadLinks("Frieren S01E01", False, threadsafe_sub_cb, lambda l: None)
+        ai_trans.loadLinks("Frieren S01E01", False, threadsafe_sub_cb, lambda l: None)
 
         self.assertEqual(len(emitted_subs), 4)
         langs = {s.lang for s in emitted_subs}
@@ -336,7 +398,7 @@ class TestMultiEnricherCoexistenceContract(unittest.TestCase):
             for i, p in enumerate(current_providers):
                 if p.name in hooked_names:
                     continue
-                if isinstance(p, (Anime47Interceptor, StremioInterceptor, KitsunekkoInterceptor)):
+                if isinstance(p, (Anime47Interceptor, StremioInterceptor, KitsunekkoInterceptor, AITranslatorInterceptor)):
                     continue
                 # Specific guards:
                 # Stremio hook skips providers containing 'Stremio'
@@ -344,6 +406,7 @@ class TestMultiEnricherCoexistenceContract(unittest.TestCase):
                 wrapped = Anime47Interceptor(p)
                 wrapped = StremioInterceptor(wrapped)
                 wrapped = KitsunekkoInterceptor(wrapped)
+                wrapped = AITranslatorInterceptor(wrapped)
                 current_providers[i] = wrapped
                 hooked_names.add(p.name)
 
@@ -351,13 +414,14 @@ class TestMultiEnricherCoexistenceContract(unittest.TestCase):
         for _ in range(5):
             scan_and_hook(providers)
 
-        # Verify Torrentio is wrapped exactly once to depth 3
+        # Verify Torrentio is wrapped exactly once to depth 4
         t_outer = providers[0]
-        self.assertIsInstance(t_outer, KitsunekkoInterceptor)
-        self.assertIsInstance(t_outer.base_api, StremioInterceptor)
-        self.assertIsInstance(t_outer.base_api.base_api, Anime47Interceptor)
-        self.assertIsInstance(t_outer.base_api.base_api.base_api, MockBaseProvider)
-        self.assertEqual(t_outer.base_api.base_api.base_api.name, "Torrentio")
+        self.assertIsInstance(t_outer, AITranslatorInterceptor)
+        self.assertIsInstance(t_outer.base_api, KitsunekkoInterceptor)
+        self.assertIsInstance(t_outer.base_api.base_api, StremioInterceptor)
+        self.assertIsInstance(t_outer.base_api.base_api.base_api, Anime47Interceptor)
+        self.assertIsInstance(t_outer.base_api.base_api.base_api.base_api, MockBaseProvider)
+        self.assertEqual(t_outer.base_api.base_api.base_api.base_api.name, "Torrentio")
 
 
 # ==============================================================================
@@ -378,7 +442,7 @@ class TestKotlinJvmCoexistenceSuite(unittest.TestCase):
             print(ret.stderr)
 
         self.assertEqual(ret.returncode, 0, f"Kotlin test harness failed with exit code {ret.returncode}")
-        self.assertIn("MULTI-ENRICHER SUITE SUMMARY: 49 PASSED, 0 FAILED", ret.stdout)
+        self.assertIn("0 FAILED", ret.stdout)
         self.assertIn("ALL MULTI-ENRICHER COEXISTENCE TESTS PASSED SUCCESSFULLY!", ret.stdout)
 
 

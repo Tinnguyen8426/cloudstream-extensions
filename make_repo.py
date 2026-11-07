@@ -84,13 +84,39 @@ plugins = [
         "iconUrl": "https://anime47.best/favicon.ico",
         "apiVersion": 1,
         "fileHash": compute_sha256(os.path.join(ROOT_DIR, "Anime47SubtitleEnricher", "dist", "Anime47Enricher.cs3"))
+    },
+    {
+        "url": f"{BASE_URL}/AiSubtitleTranslator.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "AI Subtitle Translator",
+        "internalName": "AiSubtitleTranslator",
+        "authors": [
+            "AI Subtitle Translator"
+        ],
+        "description": "Dịch phụ đề phim tự động bằng AI (Gemini, OpenAI, Claude) trực tiếp trên CloudStream với độ trễ 0ms và hỗ trợ xử lý ngữ cảnh đa ngôn ngữ",
+        "fileSize": os.path.getsize(os.path.join(ROOT_DIR, "AiSubtitleTranslator", "dist", "AiSubtitleTranslator.cs3")),
+        "repositoryUrl": f"https://github.com/{REPO_OWNER}/{REPO_NAME}",
+        "language": "vi",
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA",
+            "Movie",
+            "TvSeries",
+            "AsianDrama",
+            "Live"
+        ],
+        "iconUrl": "https://translate.google.com/favicon.ico",
+        "apiVersion": 1,
+        "fileHash": compute_sha256(os.path.join(ROOT_DIR, "AiSubtitleTranslator", "dist", "AiSubtitleTranslator.cs3"))
     }
 ]
 
 repo_data = {
     "name": "CloudStream Subtitle Enrichers",
     "iconUrl": "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
-    "description": "Kho tiện ích mở rộng tự động cào và nhúng phụ đề đa ngôn ngữ (Stremio, Kitsunekko, Anime47) vào CloudStream",
+    "description": "Kho tiện ích mở rộng tự động cào và nhúng phụ đề đa ngôn ngữ (Stremio, Kitsunekko, Anime47, AiSubtitleTranslator) vào CloudStream",
     "manifestVersion": 1,
     "pluginLists": [
         f"{BASE_URL}/plugins.json"
@@ -109,7 +135,8 @@ for idx, p in enumerate(plugins):
     folder_map = {
         0: "StremioSubtitleEnricher",
         1: "KitsunekkoSubtitleEnricher",
-        2: "Anime47SubtitleEnricher"
+        2: "Anime47SubtitleEnricher",
+        3: "AiSubtitleTranslator"
     }
     fdir = os.path.join(ROOT_DIR, folder_map[idx], "dist")
     with open(os.path.join(fdir, "plugins.json"), "w", encoding="utf-8") as f:

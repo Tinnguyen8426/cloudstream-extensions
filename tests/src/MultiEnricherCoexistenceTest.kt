@@ -7,6 +7,9 @@ import com.anime47.enricher.models.SubtitleTrack
 import com.kitsunekko.enricher.KitsunekkoHook
 import com.stremio.subenricher.StremioSubHook
 import com.stremio.subenricher.StremioSubtitleTrack
+import com.lagradost.cloudstream3.subtitles.ai.hook.AITranslatorHook
+import com.lagradost.cloudstream3.subtitles.ai.hook.AITranslatorEnrichedMainAPI
+import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
 import com.lagradost.cloudstream3.APIHolder
 import com.lagradost.cloudstream3.AnimeLoadResponse
 import com.lagradost.cloudstream3.Episode
@@ -156,16 +159,17 @@ object MultiEnricherCoexistenceTest {
     }
 
     private fun resetAllEnricherHooks() {
+        AITranslatorHook.detachHooks()
         StremioSubHook.detachHooks()
         KitsunekkoHook.detachHooks()
         Anime47Hook.detachHooks()
     }
 
     // =========================================================================
-    // Test 1: Simultaneous Hook Chaining (Anime47 + Stremio + Kitsunekko)
+    // Test 1: Simultaneous Hook Chaining (Anime47 + Stremio + Kitsunekko + AiSubtitleTranslator)
     // =========================================================================
     private fun testSimultaneousHookChaining() {
-        println("\n>>> Test 1: Simultaneous Hook Chaining (Triple Wrapper Chaining)")
+        println("\n>>> Test 1: Simultaneous Hook Chaining (4-Tier Wrapper Chaining)")
 
         // 1. Reset all provider hooks and APIHolder
         resetAllEnricherHooks()
@@ -203,29 +207,46 @@ object MultiEnricherCoexistenceTest {
         val stage3Provider = allProviders[0]
         assertTrue("Stage 3: Outermost wrapper is KitsunekkoEnrichedMainAPI",
             stage3Provider is KitsunekkoHook.KitsunekkoEnrichedMainAPI)
-        val kitsunekkoWrapper = stage3Provider as KitsunekkoHook.KitsunekkoEnrichedMainAPI
 
-        // Verify the entire 3-tier chain
-        assertTrue("Tier 1 (Outer): KitsunekkoEnrichedMainAPI", kitsunekkoWrapper is KitsunekkoHook.KitsunekkoEnrichedMainAPI)
-        assertTrue("Tier 2 (Middle): StremioEnrichedMainAPI", kitsunekkoWrapper.baseApi is StremioSubHook.StremioEnrichedMainAPI)
+        // 5. Attach AiSubtitleTranslator hook fourth (Outermost self-hoisting head)
+        TranslatorConfig.isEnabled = true
+        AITranslatorHook.scanAndHoistHooks()
+
+        val stage4Provider = allProviders[0]
+        assertTrue("Stage 4: Outermost wrapper is AITranslatorEnrichedMainAPI",
+            stage4Provider is AITranslatorEnrichedMainAPI)
+        val aiWrapper = stage4Provider as AITranslatorEnrichedMainAPI
+
+        // Verify the entire 4-tier chain
+        assertTrue("Tier 1 (Outer Head): AITranslatorEnrichedMainAPI", aiWrapper is AITranslatorEnrichedMainAPI)
+        assertTrue("Tier 2: KitsunekkoEnrichedMainAPI", aiWrapper.baseApi is KitsunekkoHook.KitsunekkoEnrichedMainAPI)
+        val kitsunekkoWrapper = aiWrapper.baseApi as KitsunekkoHook.KitsunekkoEnrichedMainAPI
+        assertTrue("Tier 3: StremioEnrichedMainAPI", kitsunekkoWrapper.baseApi is StremioSubHook.StremioEnrichedMainAPI)
         val middleStremio = kitsunekkoWrapper.baseApi as StremioSubHook.StremioEnrichedMainAPI
-        assertTrue("Tier 3 (Inner): Anime47Hook.EnrichedMainAPI", middleStremio.baseApi is Anime47Hook.EnrichedMainAPI)
+        assertTrue("Tier 4: Anime47Hook.EnrichedMainAPI", middleStremio.baseApi is Anime47Hook.EnrichedMainAPI)
         val innerAnime47 = middleStremio.baseApi as Anime47Hook.EnrichedMainAPI
-        assertEquals("Base Provider: Original Torrentio reached", baseTorrentio, innerAnime47.original)
+        assertEquals("Base Provider: Original Torrentio reached at leaf", baseTorrentio, innerAnime47.original)
 
-        // Verify property delegation through 3 levels
-        assertEquals("Chain: Delegated name is Torrentio", "Torrentio", stage3Provider.name)
-        assertEquals("Chain: Delegated mainUrl is https://torrentio.strem.fun", "https://torrentio.strem.fun", stage3Provider.mainUrl)
-        assertEquals("Chain: Supported types preserved", setOf(TvType.Anime, TvType.Movie, TvType.TvSeries), stage3Provider.supportedTypes)
+        // Verify property delegation through 4 levels
+        assertEquals("Chain: Delegated name is Torrentio", "Torrentio", stage4Provider.name)
+        assertEquals("Chain: Delegated mainUrl is https://torrentio.strem.fun", "https://torrentio.strem.fun", stage4Provider.mainUrl)
+        assertEquals("Chain: Supported types preserved", setOf(TvType.Anime, TvType.Movie, TvType.TvSeries), stage4Provider.supportedTypes)
+
+        // Dynamic Self-Hoisting Outermost Invariant Test:
+        // Even if Anime47 or Stremio re-hooks after AI Translator, scanAndHoistHooks maintains AI at head
+        Anime47Hook.scanAndHookProviders()
+        AITranslatorHook.scanAndHoistHooks()
+        assertTrue("Outermost invariant maintained: head is AITranslatorEnrichedMainAPI",
+            allProviders[0] is AITranslatorEnrichedMainAPI)
     }
 
     // =========================================================================
-    // Test 2: Arbitrary Hook Chaining Sequences
+    // Test 2: Arbitrary Hook Chaining Sequences & Outermost Self-Hoisting
     // =========================================================================
     private fun testArbitraryHookChainingSequences() {
-        println("\n>>> Test 2: Arbitrary Hook Chaining Sequences (Kitsunekko -> Stremio -> Anime47)")
+        println("\n>>> Test 2: Arbitrary Hook Chaining Sequences (Kitsunekko -> Stremio -> Anime47 -> AI Translator)")
 
-        // Sequence: Kitsunekko first, then Stremio, then Anime47
+        // Sequence: Kitsunekko first, then Stremio, then Anime47, then AI Translator
         resetAllEnricherHooks()
         val allProviders = APIHolder.allProviders
         allProviders.clear()
@@ -245,8 +266,18 @@ object MultiEnricherCoexistenceTest {
         val stremioOuter = allProviders[0] as StremioSubHook.StremioEnrichedMainAPI
         assertTrue("Stremio's baseApi is KitsunekkoEnrichedMainAPI", stremioOuter.baseApi is KitsunekkoHook.KitsunekkoEnrichedMainAPI)
 
-        assertEquals("Delegated name AnimePahe preserved", "AnimePahe", stremioOuter.name)
-        assertEquals("Delegated mainUrl AnimePahe preserved", "https://animepahe.ru", stremioOuter.mainUrl)
+        // Hook 3: Anime47
+        Anime47Hook.enrichAllProviders = true
+        Anime47Hook.scanAndHookProviders()
+
+        // Hook 4: AI Translator
+        AITranslatorHook.scanAndHoistHooks()
+        assertTrue("AI Translator self-hoisted to outermost head position",
+            allProviders[0] is AITranslatorEnrichedMainAPI)
+        val aiOuter = allProviders[0] as AITranslatorEnrichedMainAPI
+
+        assertEquals("Delegated name AnimePahe preserved across 4 layers", "AnimePahe", aiOuter.name)
+        assertEquals("Delegated mainUrl AnimePahe preserved across 4 layers", "https://animepahe.ru", aiOuter.mainUrl)
     }
 
     // =========================================================================
@@ -282,16 +313,17 @@ object MultiEnricherCoexistenceTest {
             }
         }
 
-        // Chain all three hooks manually to isolate execution
+        // Chain all four hooks manually to isolate execution
         val anime47 = Anime47Hook.EnrichedMainAPI(baseProvider)
         val stremio = StremioSubHook.StremioEnrichedMainAPI(anime47)
         val kitsunekko = KitsunekkoHook.KitsunekkoEnrichedMainAPI(stremio)
+        val aiTranslator = AITranslatorEnrichedMainAPI(kitsunekko)
 
         val videoReceived = AtomicBoolean(false)
         val videoArrivalMs = AtomicInteger(-1)
         val startTime = System.currentTimeMillis()
 
-        kitsunekko.loadLinks(
+        aiTranslator.loadLinks(
             data = "https://instant.video/stream_1080p.mkv",
             isCasting = false,
             subtitleCallback = { },
@@ -302,8 +334,8 @@ object MultiEnricherCoexistenceTest {
             }
         )
 
-        assertTrue("Video callback was executed", videoReceived.get())
-        assertTrue("Video callback passthrough latency < 150ms (actual: ${videoArrivalMs.get()}ms)",
+        assertTrue("Video callback was executed through 4-tier chain", videoReceived.get())
+        assertTrue("Video callback passthrough latency < 150ms across 4 enrichers (actual: ${videoArrivalMs.get()}ms)",
             videoArrivalMs.get() in 0..150)
     }
 
@@ -412,10 +444,13 @@ object MultiEnricherCoexistenceTest {
             }
         }
 
+        // Outermost layer: AI Subtitle Translator wrapping Kitsunekko
+        val aiTranslator = AITranslatorEnrichedMainAPI(kitsunekko)
+
         val emittedSubtitles = CopyOnWriteArrayList<SubtitleFile>()
         val videoLinks = CopyOnWriteArrayList<ExtractorLink>()
 
-        kitsunekko.loadLinks(
+        aiTranslator.loadLinks(
             data = "Sousou no Frieren S01E01",
             isCasting = false,
             subtitleCallback = { sub ->
@@ -430,7 +465,7 @@ object MultiEnricherCoexistenceTest {
         delay(200)
 
         assertEquals("Video links received count", 1, videoLinks.size)
-        assertEquals("Total subtitles emitted across 3 enrichers", 4, emittedSubtitles.size)
+        assertEquals("Total subtitles emitted across 4 enrichers without interference", 4, emittedSubtitles.size)
 
         val langs = emittedSubtitles.map { it.lang }.toSet()
         assertTrue("Contains Vietnamese (Anime47)", langs.contains("Tiếng Việt (Anime47)"))
@@ -505,7 +540,7 @@ object MultiEnricherCoexistenceTest {
     // Test 6: Anti-Recursion Guards and Idempotency
     // =========================================================================
     private fun testAntiRecursionGuardsAndIdempotency() {
-        println("\n>>> Test 6: Anti-Recursion Guards & Repeated Hook Idempotency")
+        println("\n>>> Test 6: Anti-Recursion Guards, Repeated Hook Idempotency & Detach")
 
         resetAllEnricherHooks()
         val allProviders = APIHolder.allProviders
@@ -521,30 +556,35 @@ object MultiEnricherCoexistenceTest {
         allProviders.add(pKitsunekkoNative)
         allProviders.add(pAnime47Native)
 
-        // Run hook attachment multiple times in a row
+        // Run hook attachment multiple times in a row across all 4 enrichers
         for (pass in 1..5) {
             Anime47Hook.scanAndHookProviders()
             StremioSubHook.scanAndHookProviders()
             KitsunekkoHook.scanAndHookProviders()
+            AITranslatorHook.scanAndHoistHooks()
         }
 
-        // 1. Verify pTorrentio is wrapped exactly once per enricher (depth == 3)
+        // 1. Verify pTorrentio is wrapped exactly once per enricher (depth == 4)
         val hookedTorrentio = allProviders[0]
-        assertTrue("Torrentio is KitsunekkoEnrichedMainAPI", hookedTorrentio is KitsunekkoHook.KitsunekkoEnrichedMainAPI)
-        val kWrap = hookedTorrentio as KitsunekkoHook.KitsunekkoEnrichedMainAPI
+        assertTrue("Outermost is AITranslatorEnrichedMainAPI", hookedTorrentio is AITranslatorEnrichedMainAPI)
+        val aiWrap = hookedTorrentio as AITranslatorEnrichedMainAPI
 
-        assertTrue("Second level is StremioEnrichedMainAPI", kWrap.baseApi is StremioSubHook.StremioEnrichedMainAPI)
+        assertTrue("Second level is KitsunekkoEnrichedMainAPI", aiWrap.baseApi is KitsunekkoHook.KitsunekkoEnrichedMainAPI)
+        val kWrap = aiWrap.baseApi as KitsunekkoHook.KitsunekkoEnrichedMainAPI
+
+        assertTrue("Third level is StremioEnrichedMainAPI", kWrap.baseApi is StremioSubHook.StremioEnrichedMainAPI)
         val sWrap = kWrap.baseApi as StremioSubHook.StremioEnrichedMainAPI
 
-        assertTrue("Third level is Anime47Hook.EnrichedMainAPI", sWrap.baseApi is Anime47Hook.EnrichedMainAPI)
+        assertTrue("Fourth level is Anime47Hook.EnrichedMainAPI", sWrap.baseApi is Anime47Hook.EnrichedMainAPI)
         val aWrap = sWrap.baseApi as Anime47Hook.EnrichedMainAPI
 
-        assertEquals("Fourth level is original base provider", pTorrentio, aWrap.original)
+        assertEquals("Fifth level is original base provider", pTorrentio, aWrap.original)
 
         // Crucial Anti-Recursion invariant: aWrap.original MUST NOT be another EnrichedMainAPI!
         assertTrue("Base provider is NOT EnrichedMainAPI (no recursion)", aWrap.original !is Anime47Hook.EnrichedMainAPI)
         assertTrue("Base provider is NOT StremioEnrichedMainAPI (no recursion)", aWrap.original !is StremioSubHook.StremioEnrichedMainAPI)
         assertTrue("Base provider is NOT KitsunekkoEnrichedMainAPI (no recursion)", aWrap.original !is KitsunekkoHook.KitsunekkoEnrichedMainAPI)
+        assertTrue("Base provider is NOT AITranslatorEnrichedMainAPI (no recursion)", aWrap.original !is AITranslatorEnrichedMainAPI)
 
         // 2. Native providers containing extension name in title must NOT be self-wrapped:
         // Stremio Addon Native must NOT be wrapped by Stremio
@@ -558,21 +598,35 @@ object MultiEnricherCoexistenceTest {
         // Anime47 Native must NOT be wrapped by Anime47
         val anime47NativeResult = allProviders[3]
         assertTrue("Anime47 Native not wrapped by Anime47", anime47NativeResult !is Anime47Hook.EnrichedMainAPI)
+
+        // 3. Test Provider Chain Unwrap on Detach:
+        AITranslatorHook.detachHooks()
+        val afterAiDetach = allProviders[0]
+        assertTrue("After AI Translator detach, head unwrapped to KitsunekkoEnrichedMainAPI",
+            afterAiDetach is KitsunekkoHook.KitsunekkoEnrichedMainAPI)
+
+        KitsunekkoHook.detachHooks()
+        StremioSubHook.detachHooks()
+        Anime47Hook.detachHooks()
+        val afterFullDetach = allProviders[0]
+        assertEquals("After full detach of all enrichers, restored completely to original base provider",
+            pTorrentio, afterFullDetach)
     }
 
     // =========================================================================
     // Test 7: Metadata Delegation Across Chain
     // =========================================================================
     private fun testMetadataDelegationAcrossChain() = runBlocking {
-        println("\n>>> Test 7: Metadata Delegation & Load Response Across Chain")
+        println("\n>>> Test 7: Metadata Delegation & Load Response Across 4-Tier Chain")
 
         val baseProvider = MockBaseTorrentioProvider("FrierenStream")
         val anime47 = Anime47Hook.EnrichedMainAPI(baseProvider)
         val stremio = StremioSubHook.StremioEnrichedMainAPI(anime47)
         val kitsunekko = KitsunekkoHook.KitsunekkoEnrichedMainAPI(stremio)
+        val aiTranslator = AITranslatorEnrichedMainAPI(kitsunekko)
 
-        // Execute load() through the 3-tier chain
-        val response = kitsunekko.load("https://mock.stream/frieren_series")
+        // Execute load() through the 4-tier chain
+        val response = aiTranslator.load("https://mock.stream/frieren_series")
         assertTrue("load() returned non-null response through chain", response != null)
         assertTrue("Response is MovieLoadResponse", response is MovieLoadResponse)
         val movieResp = response as MovieLoadResponse

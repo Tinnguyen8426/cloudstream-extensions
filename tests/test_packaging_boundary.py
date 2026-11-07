@@ -28,8 +28,10 @@ import unittest
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STREMIO_CS3 = os.path.join(ROOT_DIR, "StremioSubtitleEnricher", "dist", "StremioSubEnricher.cs3")
 KITSUNEKKO_CS3 = os.path.join(ROOT_DIR, "KitsunekkoSubtitleEnricher", "dist", "KitsunekkoEnricher.cs3")
+AI_TRANSLATOR_CS3 = os.path.join(ROOT_DIR, "AiSubtitleTranslator", "dist", "AiSubtitleTranslator.cs3")
 STREMIO_PLUGINS_JSON = os.path.join(ROOT_DIR, "StremioSubtitleEnricher", "dist", "plugins.json")
 KITSUNEKKO_PLUGINS_JSON = os.path.join(ROOT_DIR, "KitsunekkoSubtitleEnricher", "dist", "plugins.json")
+AI_TRANSLATOR_PLUGINS_JSON = os.path.join(ROOT_DIR, "AiSubtitleTranslator", "dist", "plugins.json")
 
 def compute_sha256(filepath_or_bytes):
     h = hashlib.sha256()
@@ -141,9 +143,24 @@ class TestPackageBoundaryDefects(unittest.TestCase):
                 self.assertFalse(name.endswith(".java"), f"Source file leaked: {name}")
                 self.assertFalse("cache" in name.lower(), f"Cache artifact found: {name}")
 
+    def test_ai_translator_cs3_unauthorized_files(self):
+        """Asserts AiSubtitleTranslator.cs3 contains ONLY authorized runtime entries: classes.dex and manifest.json."""
+        with zipfile.ZipFile(AI_TRANSLATOR_CS3, "r") as zf:
+            namelist = zf.namelist()
+            self.assertEqual(
+                sorted(namelist),
+                ["classes.dex", "manifest.json"],
+                f"Unauthorized files found in AI Translator package: {namelist}"
+            )
+            for name in namelist:
+                self.assertFalse(name.startswith("."), f"Dot-file found: {name}")
+                self.assertFalse(name.endswith(".kt"), f"Source file leaked: {name}")
+                self.assertFalse(name.endswith(".java"), f"Source file leaked: {name}")
+                self.assertFalse("cache" in name.lower(), f"Cache artifact found: {name}")
+
     def test_zip_file_attributes_and_permissions(self):
         """Verifies zip entries have safe read/write attributes and no dangerous flags."""
-        for cs3_path in [STREMIO_CS3, KITSUNEKKO_CS3]:
+        for cs3_path in [STREMIO_CS3, KITSUNEKKO_CS3, AI_TRANSLATOR_CS3]:
             with zipfile.ZipFile(cs3_path, "r") as zf:
                 for zinfo in zf.infolist():
                     mode = zinfo.external_attr >> 16
@@ -215,7 +232,11 @@ class TestPackageBoundaryDefects(unittest.TestCase):
 
     def test_tamper_detection_checksums(self):
         """Verifies that tampering with even a single byte in .cs3 breaks SHA256 checksum match."""
-        for cs3_path, plugins_json_path in [(STREMIO_CS3, STREMIO_PLUGINS_JSON), (KITSUNEKKO_CS3, KITSUNEKKO_PLUGINS_JSON)]:
+        for cs3_path, plugins_json_path in [
+            (STREMIO_CS3, STREMIO_PLUGINS_JSON),
+            (KITSUNEKKO_CS3, KITSUNEKKO_PLUGINS_JSON),
+            (AI_TRANSLATOR_CS3, AI_TRANSLATOR_PLUGINS_JSON)
+        ]:
             with open(plugins_json_path, "r", encoding="utf-8") as f:
                 plugins_data = json.load(f)
             expected_hash = plugins_data[0]["fileHash"] if isinstance(plugins_data, list) else plugins_data["fileHash"]
@@ -243,6 +264,7 @@ class TestDex035BytecodeInspection(unittest.TestCase):
 
         manifest = json.loads(manifest_bytes.decode("utf-8"))
         self.assertEqual(manifest["pluginClassName"], expected_plugin_class)
+        self.assertFalse(manifest.get("requiresResources", True), "requiresResources must be false")
 
         header, strings, types, classes = parse_dex(dex_bytes)
 
@@ -305,6 +327,9 @@ class TestDex035BytecodeInspection(unittest.TestCase):
 
     def test_kitsunekko_dex_bytecode_and_symbols(self):
         self._verify_dex_contract(KITSUNEKKO_CS3, "com.kitsunekko.enricher.KitsunekkoPlugin")
+
+    def test_ai_translator_dex_bytecode_and_symbols(self):
+        self._verify_dex_contract(AI_TRANSLATOR_CS3, "com.lagradost.cloudstream3.subtitles.ai.AITranslatorPlugin")
 
 
 if __name__ == "__main__":
