@@ -3,10 +3,12 @@ package com.lagradost.cloudstream3.subtitles.ai.parser
 import com.lagradost.cloudstream3.subtitles.ai.models.SubtitleCue
 
 /**
- * Unified multi-format subtitle parser supporting SubRip (.srt) and WebVTT (.vtt).
+ * Unified multi-format subtitle parser supporting SubRip (.srt), WebVTT (.vtt),
+ * and Advanced SubStation Alpha (.ass / .ssa).
  * Handles BOM sanitization, CRLF normalization, flexible timestamp parsing (missing hours,
  * variable millisecond precision), safe blank-line delimited cue index stripping (preserving
- * numeric dialogue like "Agent 47"), and regex style tag shielding.
+ * numeric dialogue like "Agent 47"), speaker diarization from WebVTT voice tags, SRT prefixes,
+ * and ASS/SSA Name/Style fields, as well as regex style tag shielding.
  */
 class SubtitleParser {
     companion object {
@@ -16,11 +18,20 @@ class SubtitleParser {
             """(?m)^\s*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,4})\s*-->\s*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,4})([^\r\n]*)"""
         )
 
+        // Shield style and formatting tags, preserving <v> voice tags for speaker parsing
         val TAG_SHIELD_REGEX = Regex(
-            """(<\/?[a-zA-Z0-9_.\-]+(?:\s+[^>]*?)?>|\{\\[^}]+\}|<\d{2}:\d{2}(?::\d{2})?[,.]\d{3}>)"""
+            """(<\/?(?!(?:v\s|v\.|v>))[a-zA-Z0-9_.\-]+(?:\s+[^>]*?)?>|\{\\[^}]+\}|<\d{2}:\d{2}(?::\d{2})?[,.]\d{3}>)"""
         )
 
         private val CUE_ID_REGEX = Regex("""^[a-zA-Z0-9_\-]+$""")
+
+        // Regex for WebVTT voice tags <v SpeakerName> or <v.loud SpeakerName>
+        val VTT_VOICE_REGEX = Regex("""<v(?:\.[^\s>]+)?\s+([^>]+)>""", RegexOption.IGNORE_CASE)
+        val VTT_VOICE_TAG_STRIP_REGEX = Regex("""<\/?v(?:\.[^\s>]+)?(?:\s+[^>]*)?>""", RegexOption.IGNORE_CASE)
+
+        // Regex for SRT speaker prefixes [Name]: dialogue or Name: dialogue
+        val SRT_BRACKET_REGEX = Regex("""^(?:-\s*)?\[([^\]]+)\]\s*:\s*(.*)$""", RegexOption.DOT_MATCHES_ALL)
+        val SRT_NAME_REGEX = Regex("""^(?:-\s*)?([A-Za-z0-9_ .\-']{2,25})\s*:\s*(.*)$""", RegexOption.DOT_MATCHES_ALL)
 
         /**
          * Parses hour, minute, second, and millisecond components into total milliseconds.
@@ -103,8 +114,35 @@ class SubtitleParser {
                     sanitized.length
                 }
 
-                val dialogue = sanitized.substring(textStart, textEnd.coerceAtLeast(textStart)).trim()
+                var dialogue = sanitized.substring(textStart, textEnd.coerceAtLeast(textStart)).trim()
                 if (dialogue.isBlank()) continue
+
+                // Speaker diarization extraction
+                var extractedSpeaker: String? = null
+
+                // 1. WebVTT voice tag <v SpeakerName>dialogue</v>
+                val vttMatch = VTT_VOICE_REGEX.find(dialogue)
+                if (vttMatch != null) {
+                    extractedSpeaker = vttMatch.groupValues[1].trim()
+                    dialogue = dialogue.replace(VTT_VOICE_TAG_STRIP_REGEX, "").trim()
+                } else {
+                    // 2. SRT speaker prefixes: [Name]: dialogue or Name: dialogue
+                    val bracketMatch = SRT_BRACKET_REGEX.find(dialogue)
+                    if (bracketMatch != null) {
+                        extractedSpeaker = bracketMatch.groupValues[1].trim()
+                        dialogue = bracketMatch.groupValues[2].trim().replaceFirst(Regex("""^:+\s*"""), "")
+                    } else {
+                        val nameMatch = SRT_NAME_REGEX.find(dialogue)
+                        if (nameMatch != null) {
+                            val cand = nameMatch.groupValues[1].trim()
+                            if (!cand.equals("http", true) && !cand.equals("https", true) &&
+                                !cand.equals("note", true) && cand.any { it.isLetter() }) {
+                                extractedSpeaker = cand
+                                dialogue = nameMatch.groupValues[2].trim().replaceFirst(Regex("""^:+\s*"""), "")
+                            }
+                        }
+                    }
+                }
 
                 // Shield inline tags
                 val tagMap = LinkedHashMap<String, String>()
@@ -123,7 +161,8 @@ class SubtitleParser {
                         cueSettings = settings,
                         rawText = dialogue,
                         maskedText = maskedDialogue,
-                        tagMap = tagMap
+                        tagMap = tagMap,
+                        speaker = extractedSpeaker
                     )
                 )
             }
@@ -160,6 +199,8 @@ class SubtitleParser {
             var startIndex = 1
             var endIndex = 2
             var textIndex = 9
+            var nameIndex = -1
+            var styleIndex = -1
 
             val resultCues = ArrayList<SubtitleCue>()
 
@@ -180,6 +221,8 @@ class SubtitleParser {
                         startIndex = formatColumns.indexOf("start").takeIf { it >= 0 } ?: 1
                         endIndex = formatColumns.indexOf("end").takeIf { it >= 0 } ?: 2
                         textIndex = formatColumns.indexOf("text").takeIf { it >= 0 } ?: (formatColumns.size - 1).coerceAtLeast(3)
+                        nameIndex = formatColumns.indexOf("name").takeIf { it >= 0 } ?: -1
+                        styleIndex = formatColumns.indexOf("style").takeIf { it >= 0 } ?: -1
                         continue
                     }
 
@@ -197,6 +240,14 @@ class SubtitleParser {
                                 .trim()
                             if (rawDialogue.isBlank()) continue
 
+                            val rawName = if (nameIndex >= 0) parts.getOrNull(nameIndex)?.trim() else null
+                            val rawStyle = if (styleIndex >= 0) parts.getOrNull(styleIndex)?.trim() else null
+                            val speaker = when {
+                                !rawName.isNullOrBlank() -> rawName
+                                !rawStyle.isNullOrBlank() && !rawStyle.equals("Default", true) && !rawStyle.equals("Main", true) -> rawStyle
+                                else -> null
+                            }
+
                             val tagMap = LinkedHashMap<String, String>()
                             var tagCounter = 1
                             val maskedDialogue = TAG_SHIELD_REGEX.replace(rawDialogue) { tagMatch ->
@@ -213,7 +264,8 @@ class SubtitleParser {
                                     cueSettings = null,
                                     rawText = rawDialogue,
                                     maskedText = maskedDialogue,
-                                    tagMap = tagMap
+                                    tagMap = tagMap,
+                                    speaker = speaker
                                 )
                             )
                         }

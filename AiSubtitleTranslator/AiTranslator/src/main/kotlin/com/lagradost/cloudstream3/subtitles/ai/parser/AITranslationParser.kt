@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import com.lagradost.cloudstream3.subtitles.ai.models.CharacterEntity
 import com.lagradost.cloudstream3.subtitles.ai.models.SubtitleItem
 
 /**
@@ -124,6 +125,50 @@ object AITranslationParser {
      * Polymorphic delegator alias.
      */
     fun parse(rawResponse: String): Map<Int, String> = parseTranslations(rawResponse)
+
+    /**
+     * Extracts discovered characters from the response (Bootstrap translation in Chunk 0).
+     */
+    fun parseDiscoveredCharacters(rawResponse: String): List<CharacterEntity> {
+        val cleanFences = stripMarkdownFences(rawResponse).trim()
+        val result = mutableListOf<CharacterEntity>()
+
+        try {
+            val rootNode = mapper.readTree(cleanFences)
+            val charNode = when {
+                rootNode.has("discovered_characters") && rootNode.get("discovered_characters").isArray ->
+                    rootNode.get("discovered_characters")
+                rootNode.has("discoveredCharacters") && rootNode.get("discoveredCharacters").isArray ->
+                    rootNode.get("discoveredCharacters")
+                else -> null
+            }
+
+            if (charNode != null && charNode.isArray) {
+                for (i in 0 until charNode.size()) {
+                    val elem = charNode.get(i)
+                    if (elem != null && elem.isObject) {
+                        val name = elem.get("name")?.asText()?.trim() ?: ""
+                        if (name.isNotEmpty()) {
+                            val gender = elem.get("gender")?.asText()?.trim() ?: "unknown"
+                            val role = elem.get("role")?.asText()?.trim() ?: ""
+                            val ageGroup = elem.get("ageGroup")?.asText()?.trim()
+                                ?: elem.get("age_group")?.asText()?.trim() ?: "adult"
+                            result.add(
+                                CharacterEntity(
+                                    name = name,
+                                    gender = gender,
+                                    role = role,
+                                    ageGroup = ageGroup
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        } catch (_: Throwable) {}
+
+        return result
+    }
 
     /**
      * Inspects a JsonNode to locate the primary subtitle array node.

@@ -2,8 +2,11 @@ package com.lagradost.cloudstream3.subtitles.ai.client
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import com.lagradost.cloudstream3.subtitles.ai.models.ContextCue
+import com.lagradost.cloudstream3.subtitles.ai.models.MediaContext
 import com.lagradost.cloudstream3.subtitles.ai.models.SubtitleCue
 import com.lagradost.cloudstream3.subtitles.ai.models.TranslationResult
+import com.lagradost.cloudstream3.subtitles.ai.models.TwoTierCharacterRegistry
 import com.lagradost.cloudstream3.subtitles.ai.parser.AITranslationParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -22,7 +25,7 @@ import java.util.concurrent.TimeUnit
  * 1. Endpoint construction with prefix stripping to eliminate `models/models/...` 404 defects.
  * 2. Header-based authentication via `x-goog-api-key`.
  * 3. Permissive safety settings (`BLOCK_NONE`) across all 4 categories to prevent movie subtitle drops.
- * 4. Native `responseSchema` with root `ARRAY` of `OBJECT` (id: INTEGER, text: STRING).
+ * 4. Dual structured schemas: Bootstrap schema (Chunk 0) vs TranslationsOnly schema (Chunks 1..N).
  * 5. 15 RPM rate limit vs 24-hour daily quota decoupling with exponential backoff and jitter.
  * 6. Null-safe candidate extraction from `candidates[0].content.parts[0].text`.
  */
@@ -30,7 +33,8 @@ class GeminiTranslatorClient(
     val apiKey: String,
     val baseUrl: String? = null,
     val modelName: String = "gemini-1.5-flash",
-    val httpClient: OkHttpClient? = null
+    val httpClient: OkHttpClient? = null,
+    val pacingGovernor: PacingGovernor? = null
 ) : AITranslationClient {
 
     private val mapper: ObjectMapper = ObjectMapper().registerKotlinModule()
@@ -52,27 +56,87 @@ class GeminiTranslatorClient(
         sourceLang: String?,
         targetLang: String,
         customGlossary: String?
+    ): TranslationResult = translateChunk(
+        cues = cues,
+        sourceLang = sourceLang,
+        targetLang = targetLang,
+        customGlossary = customGlossary,
+        lookbehind = emptyList(),
+        lookahead = emptyList(),
+        characterRegistry = null,
+        mediaContext = null
+    )
+
+    override suspend fun translateChunk(
+        cues: List<SubtitleCue>,
+        sourceLang: String?,
+        targetLang: String,
+        customGlossary: String?,
+        lookbehind: List<ContextCue>,
+        lookahead: List<ContextCue>,
+        characterRegistry: TwoTierCharacterRegistry?,
+        mediaContext: MediaContext?
     ): TranslationResult = withContext(Dispatchers.IO) {
         if (cues.isEmpty()) {
             return@withContext TranslationResult(emptyMap(), null, true)
         }
 
+        pacingGovernor?.pace()
+
         val endpointUrl = buildGeminiUrl(baseUrl, modelName)
-        val glossaryPrompt = if (!customGlossary.isNullOrBlank()) {
-            " Strictly adhere to the following glossary terms:\n$customGlossary\n"
-        } else ""
+        val isBootstrap = AITranslatorPromptBuilder.isBootstrap(lookbehind, characterRegistry)
+        val systemInstruction = AITranslatorPromptBuilder.buildSystemPrompt(targetLang, characterRegistry, customGlossary)
+        val userContentJson = AITranslatorPromptBuilder.buildUserPayload(cues, lookbehind, lookahead)
 
-        val systemInstruction = "You are a professional subtitle translator. Translate each dialogue entry accurately into the target language ($targetLang). " +
-                "Preserve all special tag shields (e.g. [[TAG_0]], [[TAG_1]]) exactly as formatted without alteration or removal. " +
-                "Output only a JSON array of objects with integer 'id' and string 'text'.$glossaryPrompt"
-
-        val dialogueList = cues.map { cue ->
+        val responseSchema = if (isBootstrap) {
             mapOf(
-                "id" to cue.index,
-                "text" to if (cue.maskedText.isNotBlank()) cue.maskedText else cue.rawText
+                "type" to "OBJECT",
+                "properties" to mapOf(
+                    "translations" to mapOf(
+                        "type" to "ARRAY",
+                        "items" to mapOf(
+                            "type" to "OBJECT",
+                            "properties" to mapOf(
+                                "id" to mapOf("type" to "INTEGER"),
+                                "text" to mapOf("type" to "STRING")
+                            ),
+                            "required" to listOf("id", "text")
+                        )
+                    ),
+                    "discovered_characters" to mapOf(
+                        "type" to "ARRAY",
+                        "items" to mapOf(
+                            "type" to "OBJECT",
+                            "properties" to mapOf(
+                                "name" to mapOf("type" to "STRING"),
+                                "gender" to mapOf("type" to "STRING"),
+                                "role" to mapOf("type" to "STRING")
+                            ),
+                            "required" to listOf("name", "gender", "role")
+                        )
+                    )
+                ),
+                "required" to listOf("translations")
+            )
+        } else {
+            mapOf(
+                "type" to "OBJECT",
+                "properties" to mapOf(
+                    "translations" to mapOf(
+                        "type" to "ARRAY",
+                        "items" to mapOf(
+                            "type" to "OBJECT",
+                            "properties" to mapOf(
+                                "id" to mapOf("type" to "INTEGER"),
+                                "text" to mapOf("type" to "STRING")
+                            ),
+                            "required" to listOf("id", "text")
+                        )
+                    )
+                ),
+                "required" to listOf("translations")
             )
         }
-        val userContentJson = mapper.writeValueAsString(dialogueList)
 
         // Native Gemini REST v1beta payload
         val requestMap = mapOf(
@@ -96,17 +160,7 @@ class GeminiTranslatorClient(
                 "topP" to 0.95,
                 "maxOutputTokens" to 4096,
                 "responseMimeType" to "application/json",
-                "responseSchema" to mapOf(
-                    "type" to "ARRAY",
-                    "items" to mapOf(
-                        "type" to "OBJECT",
-                        "properties" to mapOf(
-                            "id" to mapOf("type" to "INTEGER"),
-                            "text" to mapOf("type" to "STRING")
-                        ),
-                        "required" to listOf("id", "text")
-                    )
-                )
+                "responseSchema" to responseSchema
             )
         )
 
@@ -135,10 +189,12 @@ class GeminiTranslatorClient(
                         val root = mapper.readTree(responseBody)
                         val text = root.get("candidates")?.get(0)?.get("content")?.get("parts")?.get(0)?.get("text")?.asText() ?: responseBody
                         val translations = AITranslationParser.parseTranslations(text)
+                        val discovered = if (isBootstrap) AITranslationParser.parseDiscoveredCharacters(text) else null
                         return@withContext TranslationResult(
                             translations = translations,
                             rawResponse = text,
-                            success = true
+                            success = true,
+                            discoveredCharacters = discovered
                         )
                     }
 

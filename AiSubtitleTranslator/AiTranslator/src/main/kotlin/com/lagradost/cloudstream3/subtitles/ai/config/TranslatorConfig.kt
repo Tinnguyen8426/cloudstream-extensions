@@ -45,6 +45,10 @@ object TranslatorConfig {
     @Volatile var preserveSdh: Boolean = true
     @Volatile var customGlossary: String = ""
     @Volatile var deliveryStrategy: String = DELIVERY_STRATEGY_A
+    @Volatile var enableCharacterProfiling: Boolean = true
+    @Volatile var contextWindowSize: Int = 6
+    @Volatile var dynamicScenePauseMs: Long = 1800L
+    @Volatile var maxChunkCues: Int = 28
 
     /**
      * Initializes configuration by loading saved values from Android SharedPreferences.
@@ -65,6 +69,10 @@ object TranslatorConfig {
             preserveSdh = prefs.getBoolean("key_preserve_sdh", true)
             customGlossary = prefs.getString("key_custom_glossary", "") ?: ""
             deliveryStrategy = prefs.getString("key_delivery_strategy", DELIVERY_STRATEGY_A) ?: DELIVERY_STRATEGY_A
+            enableCharacterProfiling = prefs.getBoolean("key_enable_profiling", true)
+            contextWindowSize = prefs.getInt("key_context_window_size", 6)
+            dynamicScenePauseMs = prefs.getLong("key_dynamic_pause_ms", 1800L)
+            maxChunkCues = prefs.getInt("key_max_chunk_cues", 28)
         } catch (_: Throwable) {
             // Graceful fallback to default values if context or prefs are unavailable
         }
@@ -90,6 +98,10 @@ object TranslatorConfig {
                 putBoolean("key_preserve_sdh", preserveSdh)
                 putString("key_custom_glossary", customGlossary)
                 putString("key_delivery_strategy", deliveryStrategy)
+                putBoolean("key_enable_profiling", enableCharacterProfiling)
+                putInt("key_context_window_size", contextWindowSize)
+                putLong("key_dynamic_pause_ms", dynamicScenePauseMs)
+                putInt("key_max_chunk_cues", maxChunkCues)
                 apply()
             }
         } catch (_: Throwable) {}
@@ -135,6 +147,10 @@ object TranslatorConfig {
         preserveSdh = true
         customGlossary = ""
         deliveryStrategy = DELIVERY_STRATEGY_A
+        enableCharacterProfiling = true
+        contextWindowSize = 6
+        dynamicScenePauseMs = 1800L
+        maxChunkCues = 28
 
         if (context != null) {
             save(context)

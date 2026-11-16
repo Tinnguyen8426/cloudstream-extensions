@@ -12,10 +12,16 @@ import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.subtitles.ai.cache.SubtitleCacheManager
 import com.lagradost.cloudstream3.subtitles.ai.client.AITranslationClient
 import com.lagradost.cloudstream3.subtitles.ai.client.AITranslatorFactory
+import com.lagradost.cloudstream3.subtitles.ai.client.PacingGovernor
 import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
+import com.lagradost.cloudstream3.subtitles.ai.models.CharacterEntity
+import com.lagradost.cloudstream3.subtitles.ai.models.ContextCue
+import com.lagradost.cloudstream3.subtitles.ai.models.MediaContext
 import com.lagradost.cloudstream3.subtitles.ai.models.SubtitleCue
+import com.lagradost.cloudstream3.subtitles.ai.models.TwoTierCharacterRegistry
 import com.lagradost.cloudstream3.subtitles.ai.parser.SubtitleParser
 import com.lagradost.cloudstream3.subtitles.ai.parser.SubtitleReconstructor
+import com.lagradost.cloudstream3.subtitles.ai.profile.CharacterProfileManager
 import com.lagradost.cloudstream3.subtitles.ai.server.AITranslatorLocalServer
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
@@ -45,13 +51,82 @@ class AITranslationSession(
     val playerSubtitleCallback: (SubtitleFile) -> Unit,
     val deliveryStrategy: String = TranslatorConfig.deliveryStrategy,
     val context: Context? = null,
-    val clientOverride: AITranslationClient? = null
+    val clientOverride: AITranslationClient? = null,
+    val mediaContext: MediaContext? = null
 ) {
     companion object {
         private const val TAG = "AITranslationSession"
         private const val MAX_CONCURRENT_CHUNK_WORKERS = 4
         private const val INTAKE_DEBOUNCE_MS = 200L
         private const val SKELETON_THRESHOLD_CHUNKS = 20 // Activate Strategy B if > 600 cues in auto mode
+
+        private val DANGLING_WORDS = setOf(
+            "if", "when", "because", "although", "that", "to", "and", "but", "or", "as", "since",
+            "so", "while", "though", "after", "before", "the", "a", "an", "of", "in", "with"
+        )
+
+        fun isSyntacticBoundary(cue: SubtitleCue): Boolean {
+            val text = cue.rawText.trim()
+            if (text.isEmpty()) return true
+
+            val endsWithPunct = text.endsWith(".") || text.endsWith("?") || text.endsWith("!") ||
+                    text.endsWith("...") || text.endsWith("…") || text.endsWith("\"") ||
+                    text.endsWith("'") || text.endsWith("”") || text.endsWith("’") || text.endsWith("»")
+
+            val endsWithNonTerminal = text.endsWith(",") || text.endsWith(";") ||
+                    text.endsWith("—") || text.endsWith("-") || text.endsWith(":")
+
+            if (endsWithNonTerminal) return false
+
+            val lastWord = text.split(Regex("""\s+""")).lastOrNull()?.trim()?.lowercase(Locale.ROOT) ?: ""
+            val cleanedLastWord = lastWord.trimEnd('.', ',', '!', '?', ':', ';', '-', '—')
+            if (DANGLING_WORDS.contains(cleanedLastWord)) return false
+
+            return endsWithPunct || text.length > 40
+        }
+
+        fun splitIntoDynamicChunks(
+            cues: List<SubtitleCue>,
+            minCues: Int = 18,
+            maxCues: Int = 28,
+            pauseThresholdMs: Long = 1800L
+        ): List<List<SubtitleCue>> {
+            if (cues.isEmpty()) return emptyList()
+            val chunks = mutableListOf<List<SubtitleCue>>()
+            var startIndex = 0
+
+            while (startIndex < cues.size) {
+                val remaining = cues.size - startIndex
+                if (remaining <= maxCues) {
+                    chunks.add(cues.subList(startIndex, cues.size))
+                    break
+                }
+
+                var splitIndex = -1
+                val searchStart = startIndex + minCues
+                val searchEnd = (startIndex + maxCues).coerceAtMost(cues.size - 1)
+
+                for (i in searchStart until searchEnd) {
+                    val current = cues[i]
+                    val next = cues[i + 1]
+                    val deltaT = (next.startMs - current.endMs).coerceAtLeast(0L)
+
+                    if (deltaT >= pauseThresholdMs && isSyntacticBoundary(current)) {
+                        splitIndex = i + 1
+                        break
+                    }
+                }
+
+                if (splitIndex == -1) {
+                    splitIndex = (startIndex + maxCues).coerceAtMost(cues.size)
+                }
+
+                chunks.add(cues.subList(startIndex, splitIndex))
+                startIndex = splitIndex
+            }
+
+            return chunks
+        }
 
         private val fallbackClient: okhttp3.OkHttpClient by lazy {
             okhttp3.OkHttpClient.Builder()
@@ -67,6 +142,14 @@ class AITranslationSession(
 
     @Volatile
     private var translationJob: Job? = null
+
+    @Volatile
+    var activeContextWindow: DialogueContextWindow? = null
+        private set
+
+    fun onSeek(newPositionMs: Long) {
+        activeContextWindow?.reset()
+    }
 
     @Volatile
     var isCancelled: Boolean = false
@@ -173,6 +256,7 @@ class AITranslationSession(
         try {
             sessionScope.cancel()
         } catch (_: Throwable) {}
+        activeContextWindow?.reset()
         candidateList.clear()
         failedUrls.clear()
         logI(TAG, "Translation session cancelled cleanly.")
@@ -286,8 +370,9 @@ class AITranslationSession(
 
             // Step 6: Load Tier 2 Progressive Chunk Cache
             val existingTranslations = SubtitleCacheManager.loadChunks(context, cacheKey).toMutableMap()
-            val chunkSize = TranslatorConfig.chunkSize.coerceIn(10, 80)
-            val chunks = cues.chunked(chunkSize)
+            val maxChunkSize = TranslatorConfig.maxChunkCues.coerceIn(18, 50)
+            val pauseMs = TranslatorConfig.dynamicScenePauseMs
+            val chunks = splitIntoDynamicChunks(cues, minCues = 18, maxCues = maxChunkSize, pauseThresholdMs = pauseMs)
 
             // Step 7: Determine Delivery Strategy (Strategy A vs Strategy B)
             val isStrategyB = isStrategyBActive(chunks.size)
@@ -300,7 +385,6 @@ class AITranslationSession(
                 modelName = effectiveModel
             )
 
-            val semaphore = Semaphore(MAX_CONCURRENT_CHUNK_WORKERS)
             var skeletonEmitted = false
 
             // Strategy B Early Trigger: If Chunk 0 is already in Tier 2 cache, emit skeleton immediately
@@ -313,52 +397,87 @@ class AITranslationSession(
                 }
             }
 
-            // Translate chunks using bounded 4-worker coroutine pool
-            val deferredJobs = chunks.mapIndexed { index, chunkCues ->
-                async {
-                    if (!isActive || isCancelled) return@async
+            val window = DialogueContextWindow(
+                lookbehindSize = TranslatorConfig.contextWindowSize.coerceIn(2, 12),
+                lookaheadSize = 4,
+                maxLookbehindGapMs = 30000L
+            )
+            activeContextWindow = window
 
-                    // Check if chunk is already fully cached
-                    val isChunkFullyCached = chunkCues.all { existingTranslations.containsKey(it.index) }
-                    if (isChunkFullyCached) {
-                        if (isStrategyB && index == 0 && !skeletonEmitted) {
-                            emitDraftSkeleton(cues, existingTranslations, cacheKey)
-                            skeletonEmitted = true
-                        }
-                        return@async
-                    }
+            val pacingInterval = if (clientOverride != null) 0L else when (TranslatorConfig.provider) {
+                TranslatorConfig.PROVIDER_GEMINI -> 4000L
+                TranslatorConfig.PROVIDER_ANTHROPIC -> 2000L
+                TranslatorConfig.PROVIDER_OPENAI -> 1000L
+                else -> 1000L
+            }
+            val pacingGovernor = PacingGovernor(pacingInterval)
 
-                    // Acquire concurrency permit
-                    semaphore.withPermit {
-                        if (!isActive || isCancelled) return@withPermit
-
-                        val translatedChunk = translateChunkWithRetry(
-                            client = client,
-                            chunkIndex = index,
-                            chunkCues = chunkCues,
-                            sourceLang = candidate.lang,
-                            targetLang = targetLang,
-                            glossary = TranslatorConfig.customGlossary
-                        )
-
-                        if (translatedChunk.isNotEmpty()) {
-                            synchronized(existingTranslations) {
-                                existingTranslations.putAll(translatedChunk)
-                            }
-                            SubtitleCacheManager.saveChunk(context, cacheKey, index, translatedChunk)
-                        }
-
-                        // Strategy B Skeleton Trigger: Emit as soon as Chunk 0 finishes
-                        if (isStrategyB && index == 0 && !skeletonEmitted) {
-                            emitDraftSkeleton(cues, existingTranslations, cacheKey)
-                            skeletonEmitted = true
-                        }
-                    }
-                }
+            var registry = if (TranslatorConfig.enableCharacterProfiling) {
+                CharacterProfileManager.getProfile(context, mediaContext?.title)
+                    ?: TwoTierCharacterRegistry(mediaTitle = mediaContext?.title ?: "")
+            } else {
+                TwoTierCharacterRegistry()
             }
 
-            // Await all chunk coroutines
-            deferredJobs.awaitAll()
+            // Chained Ordered Pipeline: sequential streaming across chunks
+            for ((index, chunkCues) in chunks.withIndex()) {
+                if (!isActive || isCancelled) break
+
+                // Check if chunk is already fully cached
+                val isChunkFullyCached = chunkCues.all { existingTranslations.containsKey(it.index) }
+                if (isChunkFullyCached) {
+                    window.recordFinalizedCues(chunkCues, existingTranslations)
+                    if (isStrategyB && index == 0 && !skeletonEmitted) {
+                        emitDraftSkeleton(cues, existingTranslations, cacheKey)
+                        skeletonEmitted = true
+                    }
+                    continue
+                }
+
+                // Active-Speaker Pruning & Context Extraction
+                val lookbehind = window.getLookbehind(chunkCues)
+                val lookahead = window.extractLookahead(cues, chunkCues.last().index)
+                val prunedRegistry = if (TranslatorConfig.enableCharacterProfiling) {
+                    window.pruneRegistry(registry, chunkCues, lookbehind, lookahead)
+                } else null
+
+                // Pacing governor (15 RPM protection)
+                pacingGovernor.pace()
+
+                val translatedChunk = translateChunkWithRetry(
+                    client = client,
+                    chunkIndex = index,
+                    chunkCues = chunkCues,
+                    sourceLang = candidate.lang,
+                    targetLang = targetLang,
+                    glossary = TranslatorConfig.customGlossary,
+                    lookbehind = lookbehind,
+                    lookahead = lookahead,
+                    characterRegistry = prunedRegistry,
+                    mediaContext = mediaContext,
+                    onDiscoveredCharacters = { discovered ->
+                        if (index == 0 && discovered.isNotEmpty() && TranslatorConfig.enableCharacterProfiling) {
+                            val updatedChars = (registry.characters + discovered).distinctBy { it.name.lowercase(Locale.ROOT) }
+                            registry = registry.copy(characters = updatedChars)
+                            CharacterProfileManager.saveProfile(context, mediaContext?.title, registry, isEphemeral = false)
+                        }
+                    }
+                )
+
+                if (translatedChunk.isNotEmpty()) {
+                    synchronized(existingTranslations) {
+                        existingTranslations.putAll(translatedChunk)
+                    }
+                    window.recordFinalizedCues(chunkCues, translatedChunk)
+                    SubtitleCacheManager.saveChunk(context, cacheKey, index, translatedChunk)
+                }
+
+                // Strategy B Skeleton Trigger: Emit as soon as Chunk 0 finishes
+                if (isStrategyB && index == 0 && !skeletonEmitted) {
+                    emitDraftSkeleton(cues, existingTranslations, cacheKey)
+                    skeletonEmitted = true
+                }
+            }
 
             if (!isActive || isCancelled) return@withContext
 
@@ -412,7 +531,12 @@ class AITranslationSession(
         chunkCues: List<SubtitleCue>,
         sourceLang: String?,
         targetLang: String,
-        glossary: String?
+        glossary: String?,
+        lookbehind: List<ContextCue> = emptyList(),
+        lookahead: List<ContextCue> = emptyList(),
+        characterRegistry: TwoTierCharacterRegistry? = null,
+        mediaContext: MediaContext? = null,
+        onDiscoveredCharacters: ((List<CharacterEntity>) -> Unit)? = null
     ): Map<Int, String> {
         var attempts = 0
         val maxAttempts = 3
@@ -424,10 +548,17 @@ class AITranslationSession(
                     cues = chunkCues,
                     sourceLang = sourceLang,
                     targetLang = targetLang,
-                    customGlossary = glossary
+                    customGlossary = glossary,
+                    lookbehind = lookbehind,
+                    lookahead = lookahead,
+                    characterRegistry = characterRegistry,
+                    mediaContext = mediaContext
                 )
 
                 if (result.isSuccess && result.translations.isNotEmpty()) {
+                    if (!result.discoveredCharacters.isNullOrEmpty()) {
+                        onDiscoveredCharacters?.invoke(result.discoveredCharacters)
+                    }
                     return SubtitleReconciler.autoHealingReconcile(chunkCues, result.translations)
                 }
 

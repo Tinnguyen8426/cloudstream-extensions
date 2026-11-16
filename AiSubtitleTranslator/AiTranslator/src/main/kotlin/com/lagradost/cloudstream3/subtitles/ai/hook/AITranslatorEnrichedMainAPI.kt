@@ -13,6 +13,7 @@ import com.lagradost.cloudstream3.VPNStatus
 import com.lagradost.cloudstream3.syncproviders.SyncIdName
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
+import com.lagradost.cloudstream3.subtitles.ai.models.MediaContext
 import com.lagradost.cloudstream3.subtitles.ai.session.AITranslationSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -200,7 +201,11 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         return try {
             val safeUrl = sanitizeUrl(url, baseApi.mainUrl)
-            baseApi.load(safeUrl)
+            val res = baseApi.load(safeUrl)
+            if (res != null) {
+                MediaContextManager.setContext(res)
+            }
+            res
         } catch (t: Throwable) {
             logE(TAG, "Caught leaf provider exception during load for '${baseApi.name}': ${t.message}", t)
             null
@@ -268,7 +273,8 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
             mediaPayload = data,
             targetLang = TranslatorConfig.targetLanguage,
             playerSubtitleCallback = subtitleCallback,
-            context = ctx
+            context = ctx,
+            mediaContext = MediaContextManager.currentContext
         )
         activeSession = session
 
@@ -324,5 +330,35 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
             System.err.println("[$tag] [ERROR] $msg")
             tr?.printStackTrace(System.err)
         }
+    }
+}
+
+/**
+ * Singleton managing media metadata captured from CloudStream LoadResponse.
+ */
+object MediaContextManager {
+    @Volatile
+    var currentContext: MediaContext? = null
+
+    fun setContext(response: LoadResponse) {
+        val actorNames = try {
+            response.actors?.mapNotNull { it.actor.name } ?: emptyList()
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        currentContext = MediaContext(
+            title = response.name,
+            plot = response.plot ?: "",
+            actors = actorNames,
+            tags = response.tags ?: emptyList()
+        )
+    }
+
+    fun setDirectContext(context: MediaContext?) {
+        currentContext = context
+    }
+
+    fun clear() {
+        currentContext = null
     }
 }

@@ -29,6 +29,8 @@
 | 14 | Source List 4x Duplication Elimination | Prevent duplicate provider listings in CloudStream source list by correcting how hooks register/hoist in APIHolder.allProviders, APIHolder.apis, and pluginMapping | M8 | User Dispatch (Issue 2) [DONE] |
 | 15 | Multi-Plugin Rebuild & Release Synchronization | Rebuild DEX and .cs3 for all 4 affected plugins, update plugins.json/repo.json, commit and push to main and builds | M8 | User Dispatch [DONE] |
 | 16 | Live Device & Automated Coexistence Verification | Verify on live device 192.168.1.6:41739 via ADB and run all coexistence and packaging test suites | M8 | User Dispatch [DONE] |
+| 17 | Non-HTTP & JSON Payload Preservation in `load(url)` | Ensure `load(url: String)` forwards exact raw JSON metadata payloads (`{...}`, `[...]`), IDs, and URNs without prepending `mainUrl` or mangling strings | M9 | User Dispatch (New Defect) [DONE] |
+| 18 | Live Device Verification & 10-Vector Regression Testing | Verified on live device 192.168.1.6:41739 with CineTmdb movie 822653; all 8 test suites pass 100% | M9 | User Dispatch (New Defect) [DONE] |
 
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
@@ -37,7 +39,7 @@
 | 2 | Anime47 Subtitle Scanning Reliability | Anime47Scraper caching & safeText, Anime47Hook concurrency guard & fallback, Anime47Auth Mutex | none | DONE |
 | 3 | System Packaging, Coexistence & Non-Regression | StremioSubHook fix, plugin rebuilds, DEX verification, all test suites pass | M1, M2 | DONE |
 | 8 | 4-Layer Hook Chain Crash & Source Duplication Remediation | All 4 hooks (`AITranslatorHook`/`AITranslatorEnrichedMainAPI`, `StremioSubHook`, `KitsunekkoHook`, `Anime47Hook`), all providers, rebuild all 4 plugins, push to main and builds, verify on device 192.168.1.6:41739 | M1-M3 | DONE |
-| 9 | Non-HTTP & JSON Payload Preservation in `load(url)` Across All 4 Enrichers | Fix `sanitizeUrl` & `sanitizeMainPageRequest` in all 4 wrapper classes, bump versions (AI v4, Anime47 v5, Kitsunekko v3, Stremio v3), full regression testing, git sync, live ADB verification | M8 | DONE |
+| 9 | Non-HTTP & JSON Payload Preservation in `load(url)` Across All 4 Enrichers | Fix `load(url)` in all 4 wrapper classes to preserve raw JSON payloads, add regression tests, rebuild 4 plugins (v4/v5/v3/v3), deploy to main/builds, verify on device | M8 | DONE |
 
 ## Code Layout
 - `AiSubtitleTranslator/AiTranslator/src/main/kotlin/com/lagradost/cloudstream3/subtitles/ai/`
@@ -67,3 +69,6 @@
   - `run_adversarial_stress.py`
   - `run_m8_challenger2_verification.py`
   - `run_adversarial_m8_challenger.py`
+  - `run_m9_challenger2_permutations.py`
+  - `run_adversarial_m9_payload.py`
+  - `audit_packaging_and_parity.py`

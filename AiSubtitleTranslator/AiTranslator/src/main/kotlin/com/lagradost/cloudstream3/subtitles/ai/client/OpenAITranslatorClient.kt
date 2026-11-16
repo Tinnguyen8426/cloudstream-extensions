@@ -2,8 +2,11 @@ package com.lagradost.cloudstream3.subtitles.ai.client
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import com.lagradost.cloudstream3.subtitles.ai.models.ContextCue
+import com.lagradost.cloudstream3.subtitles.ai.models.MediaContext
 import com.lagradost.cloudstream3.subtitles.ai.models.SubtitleCue
 import com.lagradost.cloudstream3.subtitles.ai.models.TranslationResult
+import com.lagradost.cloudstream3.subtitles.ai.models.TwoTierCharacterRegistry
 import com.lagradost.cloudstream3.subtitles.ai.parser.AITranslationParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -17,7 +20,7 @@ import java.util.concurrent.TimeUnit
  * AI subtitle translation client for OpenAI and OpenAI-compatible REST endpoints.
  *
  * Implements:
- * 1. OpenAI Structured Outputs via `json_schema` response_format (`name: "subtitle_translations"`).
+ * 1. OpenAI Structured Outputs via `json_schema` response_format (Bootstrap schema vs TranslationsOnly schema).
  * 2. Universal base URL normalization supporting OpenAI (`/v1`), OpenRouter, DeepSeek, Groq (`/openai/v1`),
  *    and custom local endpoints (Ollama, LocalAI).
  * 3. Quota exhaustion detection (HTTP 429 + `insufficient_quota`) vs transient rate limits.
@@ -27,7 +30,8 @@ class OpenAITranslatorClient(
     val apiKey: String,
     val baseUrl: String? = null,
     val modelName: String = "gpt-4o-mini",
-    val httpClient: OkHttpClient? = null
+    val httpClient: OkHttpClient? = null,
+    val pacingGovernor: PacingGovernor? = null
 ) : AITranslationClient {
 
     private val mapper: ObjectMapper = ObjectMapper().registerKotlinModule()
@@ -49,35 +53,81 @@ class OpenAITranslatorClient(
         sourceLang: String?,
         targetLang: String,
         customGlossary: String?
+    ): TranslationResult = translateChunk(
+        cues = cues,
+        sourceLang = sourceLang,
+        targetLang = targetLang,
+        customGlossary = customGlossary,
+        lookbehind = emptyList(),
+        lookahead = emptyList(),
+        characterRegistry = null,
+        mediaContext = null
+    )
+
+    override suspend fun translateChunk(
+        cues: List<SubtitleCue>,
+        sourceLang: String?,
+        targetLang: String,
+        customGlossary: String?,
+        lookbehind: List<ContextCue>,
+        lookahead: List<ContextCue>,
+        characterRegistry: TwoTierCharacterRegistry?,
+        mediaContext: MediaContext?
     ): TranslationResult = withContext(Dispatchers.IO) {
         if (cues.isEmpty()) {
             return@withContext TranslationResult(emptyMap(), null, true)
         }
 
+        pacingGovernor?.pace()
+
         val endpointUrl = normalizeOpenAiUrl(baseUrl)
-        val glossaryPrompt = if (!customGlossary.isNullOrBlank()) {
-            " Strictly adhere to the following glossary terms:\n$customGlossary\n"
-        } else ""
-
-        val systemPrompt = "You are an expert subtitle translator. Translate each dialogue entry accurately into the target language ($targetLang). " +
-                "Preserve all special tag shields (e.g. [[TAG_0]], [[TAG_1]]) exactly as formatted without modification, reordering, or omission. " +
-                "Output a valid JSON object with key 'translations' containing an array of objects, each having integer 'id' and string 'text'.$glossaryPrompt"
-
-        val dialogueList = cues.map { cue ->
-            mapOf(
-                "id" to cue.index,
-                "text" to if (cue.maskedText.isNotBlank()) cue.maskedText else cue.rawText
-            )
-        }
-        val userContentJson = mapper.writeValueAsString(dialogueList)
+        val isBootstrap = AITranslatorPromptBuilder.isBootstrap(lookbehind, characterRegistry)
+        val systemPrompt = AITranslatorPromptBuilder.buildSystemPrompt(targetLang, characterRegistry, customGlossary)
+        val userContentJson = AITranslatorPromptBuilder.buildUserPayload(cues, lookbehind, lookahead)
 
         // Construct OpenAI Structured Outputs JSON schema payload
-        val requestMap = mapOf(
-            "model" to modelName.trim().ifEmpty { "gpt-4o-mini" },
-            "temperature" to 0.3,
-            "top_p" to 0.95,
-            "max_tokens" to 4096,
-            "response_format" to mapOf(
+        val responseFormat = if (isBootstrap) {
+            mapOf(
+                "type" to "json_schema",
+                "json_schema" to mapOf(
+                    "name" to "bootstrap_translation",
+                    "strict" to true,
+                    "schema" to mapOf(
+                        "type" to "object",
+                        "properties" to mapOf(
+                            "translations" to mapOf(
+                                "type" to "array",
+                                "items" to mapOf(
+                                    "type" to "object",
+                                    "properties" to mapOf(
+                                        "id" to mapOf("type" to "integer"),
+                                        "text" to mapOf("type" to "string")
+                                    ),
+                                    "required" to listOf("id", "text"),
+                                    "additionalProperties" to false
+                                )
+                            ),
+                            "discovered_characters" to mapOf(
+                                "type" to "array",
+                                "items" to mapOf(
+                                    "type" to "object",
+                                    "properties" to mapOf(
+                                        "name" to mapOf("type" to "string"),
+                                        "gender" to mapOf("type" to "string", "enum" to listOf("male", "female", "neutral", "unknown")),
+                                        "role" to mapOf("type" to "string")
+                                    ),
+                                    "required" to listOf("name", "gender", "role"),
+                                    "additionalProperties" to false
+                                )
+                            )
+                        ),
+                        "required" to listOf("translations", "discovered_characters"),
+                        "additionalProperties" to false
+                    )
+                )
+            )
+        } else {
+            mapOf(
                 "type" to "json_schema",
                 "json_schema" to mapOf(
                     "name" to "subtitle_translations",
@@ -102,7 +152,15 @@ class OpenAITranslatorClient(
                         "additionalProperties" to false
                     )
                 )
-            ),
+            )
+        }
+
+        val requestMap = mapOf(
+            "model" to modelName.trim().ifEmpty { "gpt-4o-mini" },
+            "temperature" to 0.3,
+            "top_p" to 0.95,
+            "max_tokens" to 4096,
+            "response_format" to responseFormat,
             "messages" to listOf(
                 mapOf("role" to "system", "content" to systemPrompt),
                 mapOf("role" to "user", "content" to userContentJson)
@@ -130,10 +188,12 @@ class OpenAITranslatorClient(
                     val root = mapper.readTree(responseBody)
                     val rawContent = root.get("choices")?.get(0)?.get("message")?.get("content")?.asText() ?: responseBody
                     val translations = AITranslationParser.parseTranslations(rawContent)
+                    val discovered = if (isBootstrap) AITranslationParser.parseDiscoveredCharacters(rawContent) else null
                     return@withContext TranslationResult(
                         translations = translations,
                         rawResponse = rawContent,
-                        success = true
+                        success = true,
+                        discoveredCharacters = discovered
                     )
                 }
 

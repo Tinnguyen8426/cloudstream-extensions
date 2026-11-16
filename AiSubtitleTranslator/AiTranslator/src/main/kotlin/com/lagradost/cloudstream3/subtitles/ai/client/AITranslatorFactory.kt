@@ -17,20 +17,22 @@ object AITranslatorFactory {
      * @param baseUrl Custom API base URL (optional).
      * @param modelName Specific model identifier (optional, falls back to effective model).
      * @param httpClient Optional OkHttpClient override for testing or custom interceptors.
+     * @param pacingGovernor Optional PacingGovernor rate limiter.
      */
     fun createClient(
         provider: String = TranslatorConfig.provider,
         apiKey: String = TranslatorConfig.apiKey,
         baseUrl: String = TranslatorConfig.customBaseUrl,
         modelName: String = TranslatorConfig.getEffectiveModel(),
-        httpClient: OkHttpClient? = null
+        httpClient: OkHttpClient? = null,
+        pacingGovernor: PacingGovernor? = null
     ): AITranslationClient {
         return when (provider.lowercase(Locale.ROOT).trim()) {
-            TranslatorConfig.PROVIDER_GEMINI -> GeminiTranslatorClient(apiKey, baseUrl, modelName, httpClient)
-            TranslatorConfig.PROVIDER_ANTHROPIC -> AnthropicTranslatorClient(apiKey, baseUrl, modelName, httpClient)
+            TranslatorConfig.PROVIDER_GEMINI -> GeminiTranslatorClient(apiKey, baseUrl, modelName, httpClient, pacingGovernor)
+            TranslatorConfig.PROVIDER_ANTHROPIC -> AnthropicTranslatorClient(apiKey, baseUrl, modelName, httpClient, pacingGovernor)
             TranslatorConfig.PROVIDER_OPENAI,
-            TranslatorConfig.PROVIDER_CUSTOM -> OpenAITranslatorClient(apiKey, baseUrl, modelName, httpClient)
-            else -> OpenAITranslatorClient(apiKey, baseUrl, modelName, httpClient)
+            TranslatorConfig.PROVIDER_CUSTOM -> OpenAITranslatorClient(apiKey, baseUrl, modelName, httpClient, pacingGovernor)
+            else -> OpenAITranslatorClient(apiKey, baseUrl, modelName, httpClient, pacingGovernor)
         }
     }
 }

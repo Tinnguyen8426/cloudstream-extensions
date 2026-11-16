@@ -2,8 +2,11 @@ package com.lagradost.cloudstream3.subtitles.ai.client
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import com.lagradost.cloudstream3.subtitles.ai.models.ContextCue
+import com.lagradost.cloudstream3.subtitles.ai.models.MediaContext
 import com.lagradost.cloudstream3.subtitles.ai.models.SubtitleCue
 import com.lagradost.cloudstream3.subtitles.ai.models.TranslationResult
+import com.lagradost.cloudstream3.subtitles.ai.models.TwoTierCharacterRegistry
 import com.lagradost.cloudstream3.subtitles.ai.parser.AITranslationParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -19,8 +22,8 @@ import java.util.concurrent.TimeUnit
  *
  * Implements:
  * 1. Base URL normalization defaulting to `https://api.anthropic.com/v1/messages`.
- * 2. Assistant prefill `[` technique to constrain Claude to output pure JSON array.
- * 3. Array prefix reconstruction (`[` prepending) for deserializing assistant continuation.
+ * 2. Assistant prefill technique to constrain Claude to output pure JSON.
+ * 3. Array prefix reconstruction for deserializing assistant continuation.
  * 4. Specific detection of HTTP 400 credit balance exhaustion ("credit balance is too low")
  *    preventing unhandled crashes and classifying as hard quota exhaustion.
  * 5. Prompt caching header (`anthropic-beta: prompt-caching-2024-07-31`).
@@ -29,7 +32,8 @@ class AnthropicTranslatorClient(
     val apiKey: String,
     val baseUrl: String? = null,
     val modelName: String = "claude-3-5-haiku-20241022",
-    val httpClient: OkHttpClient? = null
+    val httpClient: OkHttpClient? = null,
+    val pacingGovernor: PacingGovernor? = null
 ) : AITranslationClient {
 
     private val mapper: ObjectMapper = ObjectMapper().registerKotlinModule()
@@ -51,29 +55,40 @@ class AnthropicTranslatorClient(
         sourceLang: String?,
         targetLang: String,
         customGlossary: String?
+    ): TranslationResult = translateChunk(
+        cues = cues,
+        sourceLang = sourceLang,
+        targetLang = targetLang,
+        customGlossary = customGlossary,
+        lookbehind = emptyList(),
+        lookahead = emptyList(),
+        characterRegistry = null,
+        mediaContext = null
+    )
+
+    override suspend fun translateChunk(
+        cues: List<SubtitleCue>,
+        sourceLang: String?,
+        targetLang: String,
+        customGlossary: String?,
+        lookbehind: List<ContextCue>,
+        lookahead: List<ContextCue>,
+        characterRegistry: TwoTierCharacterRegistry?,
+        mediaContext: MediaContext?
     ): TranslationResult = withContext(Dispatchers.IO) {
         if (cues.isEmpty()) {
             return@withContext TranslationResult(emptyMap(), null, true)
         }
 
+        pacingGovernor?.pace()
+
         val endpointUrl = buildAnthropicUrl(baseUrl)
-        val glossaryPrompt = if (!customGlossary.isNullOrBlank()) {
-            " Strictly adhere to the following glossary terms:\n$customGlossary\n"
-        } else ""
-
-        val systemPrompt = "You are a professional subtitle translator. Translate each dialogue entry accurately into the target language ($targetLang). " +
-                "Preserve all special tag shields (e.g. [[TAG_0]], [[TAG_1]]) exactly as formatted without alteration or removal. " +
-                "Output only a JSON array of objects with integer 'id' and string 'text'.$glossaryPrompt"
-
-        val dialogueList = cues.map { cue ->
-            mapOf(
-                "id" to cue.index,
-                "text" to if (cue.maskedText.isNotBlank()) cue.maskedText else cue.rawText
-            )
-        }
-        val userContentJson = mapper.writeValueAsString(dialogueList)
+        val isBootstrap = AITranslatorPromptBuilder.isBootstrap(lookbehind, characterRegistry)
+        val systemPrompt = AITranslatorPromptBuilder.buildSystemPrompt(targetLang, characterRegistry, customGlossary)
+        val userContentJson = AITranslatorPromptBuilder.buildUserPayload(cues, lookbehind, lookahead)
 
         // Anthropic Messages API payload with Assistant Prefill
+        val prefillContent = if (isBootstrap) "{\"translations\": [" else "["
         val requestMap = mapOf(
             "model" to modelName.trim().ifEmpty { "claude-3-5-haiku-20241022" },
             "max_tokens" to 4096,
@@ -82,11 +97,11 @@ class AnthropicTranslatorClient(
             "messages" to listOf(
                 mapOf(
                     "role" to "user",
-                    "content" to "Translate the following subtitle cues into $targetLang:\n$userContentJson"
+                    "content" to "Translate the following subtitle dialogue cues into $targetLang:\n$userContentJson"
                 ),
                 mapOf(
                     "role" to "assistant",
-                    "content" to "["
+                    "content" to prefillContent
                 )
             )
         )
@@ -114,27 +129,31 @@ class AnthropicTranslatorClient(
                     val root = mapper.readTree(responseBody)
                     val rawContent = root.get("content")?.get(0)?.get("text")?.asText() ?: responseBody
 
-                    // Reconstruct JSON array since assistant prefill '[' was already emitted
-                    val completeJson = if (rawContent.trimStart().startsWith("[")) {
-                        rawContent
-                    } else {
-                        "[$rawContent"
+                    // Reconstruct JSON payload from assistant prefill
+                    val completeJson = when {
+                        rawContent.trimStart().startsWith("{") || rawContent.trimStart().startsWith("[") -> rawContent
+                        isBootstrap -> "$prefillContent$rawContent"
+                        else -> "[$rawContent"
                     }
 
                     val translations = AITranslationParser.parseTranslations(completeJson)
+                    val discovered = if (isBootstrap) AITranslationParser.parseDiscoveredCharacters(completeJson) else null
+
                     return@withContext TranslationResult(
                         translations = translations,
                         rawResponse = completeJson,
-                        success = true
+                        success = true,
+                        discoveredCharacters = discovered
                     )
                 }
 
                 // Error Classification
+                val lowerBody = responseBody.lowercase(Locale.ROOT)
                 when {
-                    isCreditExhaustion(code, responseBody) -> {
+                    code == 400 && lowerBody.contains("credit balance is too low") -> {
                         TranslationResult(
                             success = false,
-                            error = "Anthropic Credit Balance Exhausted: $responseBody",
+                            error = "Anthropic Credit Exhausted: $responseBody",
                             isQuotaExhausted = true,
                             retryable = false
                         )
@@ -196,23 +215,16 @@ class AnthropicTranslatorClient(
 
     companion object {
         /**
-         * Builds the Anthropic messages API endpoint URL.
+         * Normalizes user-specified base URLs into fully-qualified Anthropic messages endpoint.
          */
         fun buildAnthropicUrl(baseUrl: String?): String {
-            val clean = baseUrl?.trim()?.takeIf { it.isNotBlank() } ?: "https://api.anthropic.com/v1/messages"
-            return if (clean.endsWith("/messages")) clean else "$clean/messages".replace("//messages", "/messages")
-        }
-
-        /**
-         * Detects whether an Anthropic response indicates credit exhaustion (HTTP 400 + credit balance error).
-         */
-        fun isCreditExhaustion(code: Int, body: String): Boolean {
-            if (code == 400) {
-                val lower = body.lowercase(Locale.ROOT)
-                return lower.contains("credit balance is too low") ||
-                        (lower.contains("invalid_request_error") && lower.contains("credit"))
+            val clean = (baseUrl?.trim()?.takeIf { it.isNotBlank() } ?: "https://api.anthropic.com").removeSuffix("/")
+            return when {
+                clean.endsWith("/messages") -> clean
+                clean.endsWith("/v1") -> "$clean/messages"
+                !clean.contains("/v1") -> "$clean/v1/messages"
+                else -> "$clean/messages"
             }
-            return false
         }
     }
 }
