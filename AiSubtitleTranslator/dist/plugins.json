@@ -2,7 +2,7 @@
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/AiSubtitleTranslator.cs3",
         "status": 1,
-        "version": 4,
+        "version": 5,
         "name": "AI Subtitle Translator",
         "internalName": "AiSubtitleTranslator",
         "authors": [
@@ -23,6 +23,6 @@
         ],
         "iconUrl": "https://translate.google.com/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-107d6331f36d78f3a6d638871eed4aa325aa1ce3712c3ead78cd94c2f5ec49e8"
+        "fileHash": "sha256-691a826d3a10567fb62c40224e5df8ec7c00a5bff932955ed775cf575ef91000"
     }
 ]
