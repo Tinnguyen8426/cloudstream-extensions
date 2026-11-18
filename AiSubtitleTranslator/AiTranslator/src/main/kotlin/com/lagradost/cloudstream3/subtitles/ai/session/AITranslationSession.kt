@@ -24,6 +24,7 @@ import com.lagradost.cloudstream3.subtitles.ai.parser.SubtitleReconstructor
 import com.lagradost.cloudstream3.subtitles.ai.profile.AniListCastResolver
 import com.lagradost.cloudstream3.subtitles.ai.profile.CharacterProfileManager
 import com.lagradost.cloudstream3.subtitles.ai.server.AITranslatorLocalServer
+import com.lagradost.cloudstream3.subtitles.ai.ui.TranslationProgressHUD
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -236,6 +237,11 @@ class AITranslationSession(
         activePlayheadMs = posMs
         activeContextWindow?.reset()
         prioritizePlayheadChunk(posMs)
+        if (TranslatorConfig.showProgressHUD && !isCompleted && !isCancelled) {
+            try {
+                TranslationProgressHUD.onSeek(posMs / 1000)
+            } catch (_: Throwable) {}
+        }
     }
 
     @Volatile
@@ -351,6 +357,11 @@ class AITranslationSession(
             pendingChunkIndices.clear()
             currentChunks = null
         }
+        if (TranslatorConfig.showProgressHUD) {
+            try {
+                TranslationProgressHUD.dismiss()
+            } catch (_: Throwable) {}
+        }
         logI(TAG, "Translation session cancelled cleanly.")
     }
 
@@ -387,6 +398,11 @@ class AITranslationSession(
                 currentBestScore = Int.MIN_VALUE
             }
             showToast(errorMessage)
+            if (TranslatorConfig.showProgressHUD) {
+                try {
+                    TranslationProgressHUD.showError(errorMessage)
+                } catch (_: Throwable) {}
+            }
         }
     }
 
@@ -413,6 +429,18 @@ class AITranslationSession(
             showToast("[AI Translator] Bắt đầu dịch phụ đề sang $targetName...")
             logI(TAG, "Starting translation pipeline for candidate '${candidate.lang}' (${candidate.url})")
 
+            val effectiveModel = TranslatorConfig.getEffectiveModel()
+            if (TranslatorConfig.showProgressHUD) {
+                try {
+                    TranslationProgressHUD.show(
+                        context = context,
+                        modelName = effectiveModel,
+                        targetLang = targetName,
+                        initialStatus = "Đang nạp phụ đề gốc (${candidate.lang})..."
+                    )
+                } catch (_: Throwable) {}
+            }
+
             // Step 1: Download raw subtitle bytes
             val rawBytes = fetchSubtitleBytes(candidate.url, candidate.headers)
             if (rawBytes == null || rawBytes.isEmpty()) {
@@ -431,7 +459,6 @@ class AITranslationSession(
             }
 
             // Step 3: Compute SHA-256 Composite Cache Key
-            val effectiveModel = TranslatorConfig.getEffectiveModel()
             val cacheKey = SubtitleCacheManager.buildCacheKey(
                 content = rawContent,
                 targetLang = targetLang,
@@ -449,6 +476,11 @@ class AITranslationSession(
                 emitTrack(trackLabel, streamUrl)
                 showToast("[AI Translator] Đã nạp phụ đề $targetName từ bộ nhớ đệm.")
                 isCompleted = true
+                if (TranslatorConfig.showProgressHUD) {
+                    try {
+                        TranslationProgressHUD.showSuccess("Đã nạp phụ đề từ bộ nhớ đệm (100%)")
+                    } catch (_: Throwable) {}
+                }
                 return@withContext
             }
 
@@ -474,6 +506,26 @@ class AITranslationSession(
                 if (seekPos != null) {
                     prioritizePlayheadChunkLocked(seekPos, chunks)
                 }
+            }
+
+            val totalChunks = chunks.size
+            val totalCues = cues.size
+            val initialDoneChunks = chunks.count { it.all { cue -> existingTranslations.containsKey(cue.index) } }
+            val initialDoneCues = cues.count { existingTranslations.containsKey(it.index) }
+            val initialPct = if (totalCues > 0) (initialDoneCues * 100 / totalCues) else 0
+
+            if (TranslatorConfig.showProgressHUD) {
+                try {
+                    TranslationProgressHUD.updateProgress(
+                        completedChunks = initialDoneChunks,
+                        totalChunks = totalChunks,
+                        completedCues = initialDoneCues,
+                        totalCues = totalCues,
+                        percent = initialPct,
+                        modelName = effectiveModel,
+                        status = if (initialDoneChunks > 0) "Đang dịch: Chunk $initialDoneChunks/$totalChunks ($initialPct%) • $initialDoneCues/$totalCues câu" else "Đang khởi tạo các đoạn dịch..."
+                    )
+                } catch (_: Throwable) {}
             }
 
             // Step 7: Determine Delivery Strategy (Strategy A vs Strategy B)
@@ -536,6 +588,22 @@ class AITranslationSession(
                         emitDraftSkeleton(cues, existingTranslations, cacheKey)
                         skeletonEmitted = true
                     }
+                    if (TranslatorConfig.showProgressHUD) {
+                        try {
+                            val doneChunks = chunks.count { it.all { cue -> existingTranslations.containsKey(cue.index) } }
+                            val doneCues = cues.count { existingTranslations.containsKey(it.index) }
+                            val pct = if (cues.isNotEmpty()) (doneCues * 100 / cues.size) else 0
+                            TranslationProgressHUD.updateProgress(
+                                completedChunks = doneChunks,
+                                totalChunks = chunks.size,
+                                completedCues = doneCues,
+                                totalCues = cues.size,
+                                percent = pct,
+                                modelName = effectiveModel,
+                                status = "Đang dịch: Chunk $doneChunks/${chunks.size} ($pct%) • $doneCues/${cues.size} câu"
+                            )
+                        } catch (_: Throwable) {}
+                    }
                     continue
                 }
 
@@ -582,6 +650,23 @@ class AITranslationSession(
                     }
                     window.recordFinalizedCues(chunkCues, translatedChunk)
                     SubtitleCacheManager.saveChunk(context, cacheKey, index, translatedChunk)
+
+                    if (TranslatorConfig.showProgressHUD) {
+                        try {
+                            val doneChunks = chunks.count { it.all { cue -> existingTranslations.containsKey(cue.index) } }
+                            val doneCues = cues.count { existingTranslations.containsKey(it.index) }
+                            val pct = if (cues.isNotEmpty()) (doneCues * 100 / cues.size) else 0
+                            TranslationProgressHUD.updateProgress(
+                                completedChunks = doneChunks,
+                                totalChunks = chunks.size,
+                                completedCues = doneCues,
+                                totalCues = cues.size,
+                                percent = pct,
+                                modelName = effectiveModel,
+                                status = "Đang dịch: Chunk $doneChunks/${chunks.size} ($pct%) • $doneCues/${cues.size} câu"
+                            )
+                        } catch (_: Throwable) {}
+                    }
                 }
 
                 // Strategy B Skeleton Trigger: Emit as soon as Chunk 0 finishes
@@ -626,6 +711,11 @@ class AITranslationSession(
             emitTrack(authoritativeLabel, streamUrl)
             showToast("[AI Translator] Phụ đề $targetName đã dịch xong và sẵn sàng!")
             isCompleted = true
+            if (TranslatorConfig.showProgressHUD) {
+                try {
+                    TranslationProgressHUD.showSuccess("Hoàn tất 100%! Phụ đề đã sẵn sàng")
+                } catch (_: Throwable) {}
+            }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             logE(TAG, "Unexpected error in translation pipeline for '${candidate.lang}': ${t.message}", t)
@@ -677,6 +767,11 @@ class AITranslationSession(
                 if (result.isQuotaExhausted) {
                     logE(TAG, "Quota exhausted during chunk $chunkIndex translation.")
                     showToast("[AI Translator] Lỗi: Hết hạn mức API (Quota Exhausted)")
+                    if (TranslatorConfig.showProgressHUD) {
+                        try {
+                            TranslationProgressHUD.showError("Lỗi: Hết hạn mức API (Quota Exhausted)")
+                        } catch (_: Throwable) {}
+                    }
                     return emptyMap()
                 }
 

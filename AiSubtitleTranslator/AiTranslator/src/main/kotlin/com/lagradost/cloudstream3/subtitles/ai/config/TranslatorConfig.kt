@@ -49,6 +49,7 @@ object TranslatorConfig {
     @Volatile var contextWindowSize: Int = 6
     @Volatile var dynamicScenePauseMs: Long = 1800L
     @Volatile var maxChunkCues: Int = 28
+    @Volatile var showProgressHUD: Boolean = true
 
     /**
      * Initializes configuration by loading saved values from Android SharedPreferences.
@@ -73,6 +74,7 @@ object TranslatorConfig {
             contextWindowSize = prefs.getInt("key_context_window_size", 6)
             dynamicScenePauseMs = prefs.getLong("key_dynamic_pause_ms", 1800L)
             maxChunkCues = prefs.getInt("key_max_chunk_cues", 28)
+            showProgressHUD = prefs.getBoolean("key_show_progress_hud", true)
         } catch (_: Throwable) {
             // Graceful fallback to default values if context or prefs are unavailable
         }
@@ -102,6 +104,7 @@ object TranslatorConfig {
                 putInt("key_context_window_size", contextWindowSize)
                 putLong("key_dynamic_pause_ms", dynamicScenePauseMs)
                 putInt("key_max_chunk_cues", maxChunkCues)
+                putBoolean("key_show_progress_hud", showProgressHUD)
                 apply()
             }
         } catch (_: Throwable) {}
@@ -151,6 +154,7 @@ object TranslatorConfig {
         contextWindowSize = 6
         dynamicScenePauseMs = 1800L
         maxChunkCues = 28
+        showProgressHUD = true
 
         if (context != null) {
             save(context)

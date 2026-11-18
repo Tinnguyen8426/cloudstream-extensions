@@ -149,6 +149,15 @@ object AITranslatorSettingsDialog {
         }
         rootLayout.addView(enableCheckBox)
 
+        // --- Progress HUD Toggle CheckBox ---
+        val hudCheckBox = CheckBox(context).apply {
+            text = "Hiển thị thanh tiến trình dịch (Progress HUD)"
+            isChecked = TranslatorConfig.showProgressHUD
+            textSize = 14f
+            setPadding(0, 0, 0, pad8)
+        }
+        rootLayout.addView(hudCheckBox)
+
         // =====================================================================
         // SECTION 1: Cấu hình Dịch thuật (Translation Settings)
         // =====================================================================
@@ -597,6 +606,7 @@ object AITranslatorSettingsDialog {
             TranslatorConfig.maxChunkCues = rawMaxCues.coerceIn(10, 80)
 
             TranslatorConfig.preserveSdh = sdhCheckBox.isChecked
+            TranslatorConfig.showProgressHUD = hudCheckBox.isChecked
             TranslatorConfig.customGlossary = glossaryInput.text?.toString()?.trim() ?: ""
 
             // 2. Persist to SharedPreferences
