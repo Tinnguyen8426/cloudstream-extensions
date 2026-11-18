@@ -2,6 +2,7 @@ package com.lagradost.cloudstream3.subtitles.ai.client
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
 import com.lagradost.cloudstream3.subtitles.ai.models.ContextCue
 import com.lagradost.cloudstream3.subtitles.ai.models.MediaContext
 import com.lagradost.cloudstream3.subtitles.ai.models.SubtitleCue
@@ -82,11 +83,12 @@ class OpenAITranslatorClient(
 
         val endpointUrl = normalizeOpenAiUrl(baseUrl)
         val isBootstrap = AITranslatorPromptBuilder.isBootstrap(lookbehind, characterRegistry)
-        val systemPrompt = AITranslatorPromptBuilder.buildSystemPrompt(targetLang, characterRegistry, customGlossary)
+        val systemPrompt = AITranslatorPromptBuilder.buildSystemPrompt(targetLang, characterRegistry, customGlossary, mediaContext)
         val userContentJson = AITranslatorPromptBuilder.buildUserPayload(cues, lookbehind, lookahead)
 
         // Construct OpenAI Structured Outputs JSON schema payload
-        val responseFormat = if (isBootstrap) {
+        val includeDiscoveredCharacters = isBootstrap || TranslatorConfig.enableCharacterProfiling
+        val responseFormat = if (includeDiscoveredCharacters) {
             mapOf(
                 "type" to "json_schema",
                 "json_schema" to mapOf(
@@ -188,7 +190,7 @@ class OpenAITranslatorClient(
                     val root = mapper.readTree(responseBody)
                     val rawContent = root.get("choices")?.get(0)?.get("message")?.get("content")?.asText() ?: responseBody
                     val translations = AITranslationParser.parseTranslations(rawContent)
-                    val discovered = if (isBootstrap) AITranslationParser.parseDiscoveredCharacters(rawContent) else null
+                    val discovered = if (includeDiscoveredCharacters) AITranslationParser.parseDiscoveredCharacters(rawContent) else null
                     return@withContext TranslationResult(
                         translations = translations,
                         rawResponse = rawContent,

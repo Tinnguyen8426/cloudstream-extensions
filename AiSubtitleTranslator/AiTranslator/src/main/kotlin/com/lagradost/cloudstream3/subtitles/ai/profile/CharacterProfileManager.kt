@@ -84,14 +84,20 @@ object CharacterProfileManager {
             return
         }
 
-        // Persistent core profile: save to RAM and disk
-        coreMemoryCache[key] = profile
+        // Persistent core profile: filter out ephemeral entries when saving to disk/core memory
+        val persistentProfile = profile.copy(
+            characters = profile.characters.filter { !it.isEphemeral },
+            relationships = profile.relationships.filter { !it.isEphemeral }
+        )
+        coreMemoryCache[key] = persistentProfile
+        episodicStateCache.remove(key)
+
         val baseDir = customBaseDir ?: context?.filesDir ?: return
         try {
             val cacheDir = File(baseDir, "ai_profiles")
             if (!cacheDir.exists()) cacheDir.mkdirs()
             val file = File(cacheDir, "$key.json")
-            val json = mapper.writeValueAsString(profile)
+            val json = mapper.writeValueAsString(persistentProfile)
             file.writeText(json, Charsets.UTF_8)
         } catch (_: Throwable) {
             // Non-blocking I/O fault tolerance

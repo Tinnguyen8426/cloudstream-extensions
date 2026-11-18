@@ -467,6 +467,41 @@ object AITranslatorSettingsDialog {
         }
         rootLayout.addView(chunkSizeInput)
 
+        val profilingCheckBox = CheckBox(context).apply {
+            text = "Bật hồ sơ nhân vật & xưng hô hai tầng / Enable Character Profiling"
+            isChecked = TranslatorConfig.enableCharacterProfiling
+            textSize = 13f
+            setPadding(0, pad4, 0, pad4)
+        }
+        rootLayout.addView(profilingCheckBox)
+
+        addLabel("Kích thước cửa sổ trượt (Context Window Size: mặc định 6):")
+        val contextWindowSizeInput = EditText(context).apply {
+            hint = "6"
+            setText(TranslatorConfig.contextWindowSize.toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+            textSize = 14f
+        }
+        rootLayout.addView(contextWindowSizeInput)
+
+        addLabel("Ngưỡng ngắt khoảng lặng phân cảnh ms (Dynamic Scene Pause ms: mặc định 1800):")
+        val dynamicScenePauseMsInput = EditText(context).apply {
+            hint = "1800"
+            setText(TranslatorConfig.dynamicScenePauseMs.toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+            textSize = 14f
+        }
+        rootLayout.addView(dynamicScenePauseMsInput)
+
+        addLabel("Trần cứng số câu mỗi chunk (Max Chunk Cues: mặc định 28):")
+        val maxChunkCuesInput = EditText(context).apply {
+            hint = "28"
+            setText(TranslatorConfig.maxChunkCues.toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+            textSize = 14f
+        }
+        rootLayout.addView(maxChunkCuesInput)
+
         val sdhCheckBox = CheckBox(context).apply {
             text = "Giữ & Dịch âm thanh mô tả SDH ([Music], (Laughs))"
             isChecked = TranslatorConfig.preserveSdh
@@ -549,6 +584,17 @@ object AITranslatorSettingsDialog {
 
             val rawChunk = chunkSizeInput.text?.toString()?.toIntOrNull() ?: 30
             TranslatorConfig.chunkSize = rawChunk.coerceIn(10, 80)
+
+            TranslatorConfig.enableCharacterProfiling = profilingCheckBox.isChecked
+
+            val rawWindowSize = contextWindowSizeInput.text?.toString()?.toIntOrNull() ?: 6
+            TranslatorConfig.contextWindowSize = rawWindowSize.coerceIn(1, 20)
+
+            val rawPauseMs = dynamicScenePauseMsInput.text?.toString()?.toLongOrNull() ?: 1800L
+            TranslatorConfig.dynamicScenePauseMs = rawPauseMs.coerceIn(500L, 10000L)
+
+            val rawMaxCues = maxChunkCuesInput.text?.toString()?.toIntOrNull() ?: 28
+            TranslatorConfig.maxChunkCues = rawMaxCues.coerceIn(10, 80)
 
             TranslatorConfig.preserveSdh = sdhCheckBox.isChecked
             TranslatorConfig.customGlossary = glossaryInput.text?.toString()?.trim() ?: ""

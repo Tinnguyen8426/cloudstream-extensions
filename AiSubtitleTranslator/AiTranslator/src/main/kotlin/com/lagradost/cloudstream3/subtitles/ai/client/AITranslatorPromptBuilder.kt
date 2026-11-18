@@ -3,6 +3,7 @@ package com.lagradost.cloudstream3.subtitles.ai.client
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import com.lagradost.cloudstream3.subtitles.ai.models.ContextCue
+import com.lagradost.cloudstream3.subtitles.ai.models.MediaContext
 import com.lagradost.cloudstream3.subtitles.ai.models.SubtitleCue
 import com.lagradost.cloudstream3.subtitles.ai.models.TwoTierCharacterRegistry
 import java.util.Locale
@@ -89,7 +90,8 @@ object AITranslatorPromptBuilder {
     fun buildSystemPrompt(
         targetLang: String,
         characterRegistry: TwoTierCharacterRegistry?,
-        customGlossary: String?
+        customGlossary: String?,
+        mediaContext: MediaContext? = null
     ): String {
         val rosterJson = if (characterRegistry != null &&
             (characterRegistry.characters.isNotEmpty() || characterRegistry.relationships.isNotEmpty())
@@ -108,9 +110,26 @@ object AITranslatorPromptBuilder {
             "\n### 7. GLOSSARY TERMS:\nStrictly adhere to the following terminology mappings:\n$customGlossary\n"
         } else ""
 
+        val mediaContextPrompt = if (mediaContext != null &&
+            (mediaContext.title.isNotBlank() || mediaContext.plot.isNotBlank() || mediaContext.tags.isNotEmpty())
+        ) {
+            buildString {
+                append("\n### 0. MEDIA CONTEXT:\n")
+                if (mediaContext.title.isNotBlank()) {
+                    append("- Media Title: ${mediaContext.title}\n")
+                }
+                if (mediaContext.plot.isNotBlank()) {
+                    append("- Plot / Synopsis: ${mediaContext.plot}\n")
+                }
+                if (mediaContext.tags.isNotEmpty()) {
+                    append("- Tags / Genres: ${mediaContext.tags.joinToString(", ")}\n")
+                }
+            }
+        } else ""
+
         return """
             You are an elite, professional subtitle translation engine specializing in cinema and television localization into $targetLang.
-            Translate the subtitle dialogues under [TARGET_CUES] with extreme contextual fidelity, natural conversational tone, and flawless character consistency.
+            Translate the subtitle dialogues under [TARGET_CUES] with extreme contextual fidelity, natural conversational tone, and flawless character consistency.$mediaContextPrompt
 
             ### 1. CHARACTER ROSTER & RELATIONSHIPS:
             $rosterJson
@@ -119,7 +138,7 @@ object AITranslatorPromptBuilder {
             $directives
 
             ### 3. CONTEXTUAL AWARENESS & SLIDING WINDOW RULES:
-            - Cues under [LOOKBEHIND_CONTEXT] are previous conversation turns (with finalized translations). Use them strictly to anchor tone, pronouns, and narrative continuity. DO NOT translate or include them in output.
+            - CONTEXTUAL CONTINUITY & SELF-CORRECTION: Use [LOOKBEHIND_CONTEXT] to maintain conversational flow and tone. DISAMBIGUATION OVERRIDE: If lookbehind used a generic or assumed pronoun (e.g. 'anh/em' or 'tôi/bạn') but current or lookahead dialogue reveals explicit new evidence about a character's true identity, gender, title, or age hierarchy (e.g. vocatives like 'Lady', 'sir', 'young miss', 'father', 'sister', or character roster), you MUST OVERRIDE and CORRECT the pronoun immediately. DO NOT blindly persist prior mistaken pronouns. DO NOT translate or include them in output.
             - Cues under [LOOKAHEAD_CONTEXT] are upcoming source lines. Use them solely to anticipate replies, questions, or pronoun disambiguation. DO NOT translate or include them in output.
             - Translate ONLY the entries listed under [TARGET_CUES].
 

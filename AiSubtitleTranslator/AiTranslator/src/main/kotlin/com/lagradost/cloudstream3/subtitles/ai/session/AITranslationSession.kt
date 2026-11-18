@@ -21,6 +21,7 @@ import com.lagradost.cloudstream3.subtitles.ai.models.SubtitleCue
 import com.lagradost.cloudstream3.subtitles.ai.models.TwoTierCharacterRegistry
 import com.lagradost.cloudstream3.subtitles.ai.parser.SubtitleParser
 import com.lagradost.cloudstream3.subtitles.ai.parser.SubtitleReconstructor
+import com.lagradost.cloudstream3.subtitles.ai.profile.AniListCastResolver
 import com.lagradost.cloudstream3.subtitles.ai.profile.CharacterProfileManager
 import com.lagradost.cloudstream3.subtitles.ai.server.AITranslatorLocalServer
 import kotlinx.coroutines.*
@@ -140,6 +141,19 @@ class AITranslationSession(
 
     private val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    init {
+        val title = mediaContext?.title?.takeIf { it.isNotBlank() } ?: mediaPayload.takeIf { it.isNotBlank() }
+        if (!title.isNullOrBlank() && TranslatorConfig.enableCharacterProfiling) {
+            sessionScope.launch {
+                try {
+                    AniListCastResolver.resolveAndSave(context, title)
+                } catch (_: Throwable) {
+                    // Non-blocking pre-scan
+                }
+            }
+        }
+    }
+
     @Volatile
     private var translationJob: Job? = null
 
@@ -147,8 +161,81 @@ class AITranslationSession(
     var activeContextWindow: DialogueContextWindow? = null
         private set
 
-    fun onSeek(newPositionMs: Long) {
+    @Volatile
+    var activePlayheadMs: Long? = null
+        private set
+
+    private val dispatchLock = Any()
+    private val pendingChunkIndices = mutableListOf<Int>()
+
+    @Volatile
+    var currentChunks: List<List<SubtitleCue>>? = null
+        private set
+
+    val pendingChunkQueue: List<Int>
+        get() = synchronized(dispatchLock) { pendingChunkIndices.toList() }
+
+    private fun isChunkCovering(chunkCues: List<SubtitleCue>, windowStartMs: Long, windowEndMs: Long): Boolean {
+        if (chunkCues.isEmpty()) return false
+        val chunkStart = chunkCues.first().startMs
+        val chunkEnd = chunkCues.last().endMs
+        return chunkStart <= windowEndMs && chunkEnd >= windowStartMs
+    }
+
+    private fun prioritizePlayheadChunkLocked(posMs: Long, chunks: List<List<SubtitleCue>>) {
+        if (pendingChunkIndices.isEmpty()) return
+
+        val windowStart = posMs
+        val windowEnd = posMs + 60000L
+
+        val inWindow = pendingChunkIndices.filter { idx ->
+            val chunk = chunks.getOrNull(idx) ?: return@filter false
+            isChunkCovering(chunk, windowStart, windowEnd)
+        }
+
+        if (inWindow.isNotEmpty()) {
+            val afterWindow = pendingChunkIndices.filter { idx ->
+                !inWindow.contains(idx) && ((chunks.getOrNull(idx)?.firstOrNull()?.startMs ?: 0L) >= windowEnd)
+            }
+            val beforeWindow = pendingChunkIndices.filter { idx ->
+                !inWindow.contains(idx) && !afterWindow.contains(idx)
+            }
+            pendingChunkIndices.clear()
+            pendingChunkIndices.addAll(inWindow)
+            pendingChunkIndices.addAll(afterWindow)
+            pendingChunkIndices.addAll(beforeWindow)
+            logI(TAG, "Playhead Proximity Priority Dispatcher: Seek to ${posMs}ms prioritized chunks: $inWindow ahead of remaining ${pendingChunkIndices.size - inWindow.size} chunks.")
+        } else {
+            val nextUpcoming = pendingChunkIndices.firstOrNull { idx ->
+                (chunks.getOrNull(idx)?.firstOrNull()?.startMs ?: 0L) >= posMs
+            }
+            if (nextUpcoming != null) {
+                val afterNext = pendingChunkIndices.filter { idx ->
+                    idx != nextUpcoming && ((chunks.getOrNull(idx)?.firstOrNull()?.startMs ?: 0L) > (chunks.getOrNull(nextUpcoming)?.firstOrNull()?.startMs ?: 0L))
+                }
+                val beforeNext = pendingChunkIndices.filter { idx ->
+                    idx != nextUpcoming && !afterNext.contains(idx)
+                }
+                pendingChunkIndices.clear()
+                pendingChunkIndices.add(nextUpcoming)
+                pendingChunkIndices.addAll(afterNext)
+                pendingChunkIndices.addAll(beforeNext)
+                logI(TAG, "Playhead Proximity Priority Dispatcher: Seek to ${posMs}ms prioritized upcoming chunk: $nextUpcoming.")
+            }
+        }
+    }
+
+    fun prioritizePlayheadChunk(posMs: Long) {
+        synchronized(dispatchLock) {
+            val chunks = currentChunks ?: return
+            prioritizePlayheadChunkLocked(posMs, chunks)
+        }
+    }
+
+    fun onSeek(posMs: Long) {
+        activePlayheadMs = posMs
         activeContextWindow?.reset()
+        prioritizePlayheadChunk(posMs)
     }
 
     @Volatile
@@ -257,8 +344,13 @@ class AITranslationSession(
             sessionScope.cancel()
         } catch (_: Throwable) {}
         activeContextWindow?.reset()
+        CharacterProfileManager.resetEpisodicState(mediaContext?.title)
         candidateList.clear()
         failedUrls.clear()
+        synchronized(dispatchLock) {
+            pendingChunkIndices.clear()
+            currentChunks = null
+        }
         logI(TAG, "Translation session cancelled cleanly.")
     }
 
@@ -374,6 +466,16 @@ class AITranslationSession(
             val pauseMs = TranslatorConfig.dynamicScenePauseMs
             val chunks = splitIntoDynamicChunks(cues, minCues = 18, maxCues = maxChunkSize, pauseThresholdMs = pauseMs)
 
+            synchronized(dispatchLock) {
+                currentChunks = chunks
+                pendingChunkIndices.clear()
+                pendingChunkIndices.addAll(chunks.indices)
+                val seekPos = activePlayheadMs
+                if (seekPos != null) {
+                    prioritizePlayheadChunkLocked(seekPos, chunks)
+                }
+            }
+
             // Step 7: Determine Delivery Strategy (Strategy A vs Strategy B)
             val isStrategyB = isStrategyBActive(chunks.size)
             logI(TAG, "Executing ${if (isStrategyB) "Strategy B (Progressive Skeleton)" else "Strategy A (Batch Delivery)"} across ${chunks.size} chunks.")
@@ -419,9 +521,12 @@ class AITranslationSession(
                 TwoTierCharacterRegistry()
             }
 
-            // Chained Ordered Pipeline: sequential streaming across chunks
-            for ((index, chunkCues) in chunks.withIndex()) {
-                if (!isActive || isCancelled) break
+            // Chained Ordered Pipeline: sequential streaming across prioritized chunk queue
+            while (isActive && !isCancelled) {
+                val index = synchronized(dispatchLock) {
+                    if (pendingChunkIndices.isEmpty()) null else pendingChunkIndices.removeAt(0)
+                } ?: break
+                val chunkCues = chunks[index]
 
                 // Check if chunk is already fully cached
                 val isChunkFullyCached = chunkCues.all { existingTranslations.containsKey(it.index) }
@@ -456,10 +561,17 @@ class AITranslationSession(
                     characterRegistry = prunedRegistry,
                     mediaContext = mediaContext,
                     onDiscoveredCharacters = { discovered ->
-                        if (index == 0 && discovered.isNotEmpty() && TranslatorConfig.enableCharacterProfiling) {
-                            val updatedChars = (registry.characters + discovered).distinctBy { it.name.lowercase(Locale.ROOT) }
-                            registry = registry.copy(characters = updatedChars)
-                            CharacterProfileManager.saveProfile(context, mediaContext?.title, registry, isEphemeral = false)
+                        if (discovered.isNotEmpty() && TranslatorConfig.enableCharacterProfiling) {
+                            val newChars = discovered.filter { d ->
+                                registry.characters.none { it.name.equals(d.name, ignoreCase = true) }
+                            }.map { it.copy(isEphemeral = true) }
+
+                            if (newChars.isNotEmpty()) {
+                                val updatedChars = registry.characters + newChars
+                                registry = registry.copy(characters = updatedChars)
+                                CharacterProfileManager.saveProfile(context, mediaContext?.title, registry, isEphemeral = true)
+                                logI(TAG, "Chunk $index dynamically registered ${newChars.size} new characters (ephemeral). Total cast: ${updatedChars.size}")
+                            }
                         }
                     }
                 )

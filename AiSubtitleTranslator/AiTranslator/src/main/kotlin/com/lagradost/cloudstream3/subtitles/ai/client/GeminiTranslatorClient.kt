@@ -2,6 +2,7 @@ package com.lagradost.cloudstream3.subtitles.ai.client
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
 import com.lagradost.cloudstream3.subtitles.ai.models.ContextCue
 import com.lagradost.cloudstream3.subtitles.ai.models.MediaContext
 import com.lagradost.cloudstream3.subtitles.ai.models.SubtitleCue
@@ -85,10 +86,11 @@ class GeminiTranslatorClient(
 
         val endpointUrl = buildGeminiUrl(baseUrl, modelName)
         val isBootstrap = AITranslatorPromptBuilder.isBootstrap(lookbehind, characterRegistry)
-        val systemInstruction = AITranslatorPromptBuilder.buildSystemPrompt(targetLang, characterRegistry, customGlossary)
+        val includeDiscoveredCharacters = isBootstrap || TranslatorConfig.enableCharacterProfiling
+        val systemInstruction = AITranslatorPromptBuilder.buildSystemPrompt(targetLang, characterRegistry, customGlossary, mediaContext)
         val userContentJson = AITranslatorPromptBuilder.buildUserPayload(cues, lookbehind, lookahead)
 
-        val responseSchema = if (isBootstrap) {
+        val responseSchema = if (includeDiscoveredCharacters) {
             mapOf(
                 "type" to "OBJECT",
                 "properties" to mapOf(
@@ -189,7 +191,7 @@ class GeminiTranslatorClient(
                         val root = mapper.readTree(responseBody)
                         val text = root.get("candidates")?.get(0)?.get("content")?.get("parts")?.get(0)?.get("text")?.asText() ?: responseBody
                         val translations = AITranslationParser.parseTranslations(text)
-                        val discovered = if (isBootstrap) AITranslationParser.parseDiscoveredCharacters(text) else null
+                        val discovered = if (includeDiscoveredCharacters) AITranslationParser.parseDiscoveredCharacters(text) else null
                         return@withContext TranslationResult(
                             translations = translations,
                             rawResponse = text,

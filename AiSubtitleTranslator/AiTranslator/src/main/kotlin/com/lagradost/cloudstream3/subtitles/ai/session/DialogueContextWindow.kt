@@ -14,7 +14,7 @@ import java.util.concurrent.ConcurrentSkipListMap
 class DialogueContextWindow(
     val lookbehindSize: Int = 6,
     val lookaheadSize: Int = 4,
-    val maxLookbehindGapMs: Long = 30000L
+    val maxLookbehindGapMs: Long = 5000L
 ) {
     private val mapper: ObjectMapper = ObjectMapper().registerKotlinModule()
 

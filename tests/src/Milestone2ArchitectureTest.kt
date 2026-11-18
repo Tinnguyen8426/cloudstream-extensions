@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
 import com.lagradost.cloudstream3.subtitles.ai.models.*
 import com.lagradost.cloudstream3.subtitles.ai.parser.AITranslationParser
 import com.lagradost.cloudstream3.subtitles.ai.parser.SubtitleParser
+import com.lagradost.cloudstream3.subtitles.ai.profile.AniListCastResolver
 import com.lagradost.cloudstream3.subtitles.ai.profile.CharacterProfileManager
 import com.lagradost.cloudstream3.subtitles.ai.session.AITranslationSession
 import com.lagradost.cloudstream3.subtitles.ai.session.DialogueContextWindow
@@ -402,7 +403,94 @@ fun main() = runBlocking {
     assertEquals("dynamicScenePauseMs default", 1800L, TranslatorConfig.dynamicScenePauseMs)
     assertEquals("maxChunkCues default", 28, TranslatorConfig.maxChunkCues)
 
+    // -------------------------------------------------------------------------
+    // TEST 11: AniList Title Sanitizer & Vietnamese Pronoun Rule Engine
+    // -------------------------------------------------------------------------
+    println("\n--- [Test 11: AniList Title Sanitizer & Pronoun Rules] ---")
+    val rawTorrent1 = "[Judas] Kyouran Reijou Nia Liston - 07 [1080p][HEVC x265 10bit][Multi-Subs].mkv"
+    val cleaned1 = AniListCastResolver.cleanAnimeTitle(rawTorrent1)
+    assertEquals("Cleaned Nia Liston title", "Kyouran Reijou Nia Liston", cleaned1)
+
+    val rawTorrent2 = "[SubsPlease] Sousou no Frieren - S01E12 (1080p) [720p].mp4"
+    val cleaned2 = AniListCastResolver.cleanAnimeTitle(rawTorrent2)
+    assertEquals("Cleaned Frieren title", "Sousou no Frieren", cleaned2)
+
+    val rawTorrent3 = "Sekai Saikyou no Majo Episode 05 - 1080p.mkv"
+    val cleaned3 = AniListCastResolver.cleanAnimeTitle(rawTorrent3)
+    assertEquals("Cleaned Witch title", "Sekai Saikyou no Majo", cleaned3)
+
+    // Verify Vietnamese pronoun mappings
+    val pFemaleMain = AniListCastResolver.inferVietnamesePronounHint("Female", "MAIN", "Nia Liston")
+    assertEquals("Female MAIN maps to tieu thu", "tiểu thư / cô ấy", pFemaleMain)
+
+    val pFemaleSupporting = AniListCastResolver.inferVietnamesePronounHint("Female", "SUPPORTING", "Lynette Blanc")
+    assertEquals("Female SUPPORTING maps to em/hau gai", "em / hầu gái / cô ấy", pFemaleSupporting)
+
+    val pMaidAttendant = AniListCastResolver.inferVietnamesePronounHint("Female", "SUPPORTING", "Lynokis Funk (Maid)")
+    assertEquals("Maid attendant maps to em/hau gai", "em / hầu gái / cô ấy", pMaidAttendant)
+
+    val pMaleMain = AniListCastResolver.inferVietnamesePronounHint("Male", "MAIN", "Arthur Pendragon")
+    assertEquals("Male MAIN maps to thieu gia", "thiếu gia / anh ấy", pMaleMain)
+
+    val pMaleSupporting = AniListCastResolver.inferVietnamesePronounHint("Male", "SUPPORTING", "Neil Liston")
+    assertEquals("Male SUPPORTING maps to cau ay", "cậu ấy / anh ấy", pMaleSupporting)
+
+    val pUnknown = AniListCastResolver.inferVietnamesePronounHint("unknown", "BACKGROUND", "Guard A")
+    assertEquals("Unknown/Neutral maps to ho/nguoi nay", "họ / người này", pUnknown)
+
+    // -------------------------------------------------------------------------
+    // TEST 12: Dynamic Discovery Ephemeral RAM Scoping & Disk Isolation
+    // -------------------------------------------------------------------------
+    println("\n--- [Test 12: Ephemeral RAM Scoping & Disk Isolation] ---")
+    val testBaseDir = File.createTempFile("m2_profile_test_", "").apply { delete(); mkdirs() }
+    testBaseDir.deleteOnExit()
+    CharacterProfileManager.customBaseDir = testBaseDir
+
+    val persistentCast = TwoTierCharacterRegistry(
+        mediaTitle = "Kyouran Reijou Nia Liston",
+        characters = listOf(
+            CharacterEntity(name = "Nia Liston", gender = "Female", role = "MAIN", viPronounHint = "tiểu thư / cô ấy", isEphemeral = false),
+            CharacterEntity(name = "Neil Liston", gender = "Male", role = "SUPPORTING", viPronounHint = "cậu ấy / anh ấy", isEphemeral = false)
+        )
+    )
+    CharacterProfileManager.saveProfile(null, "Kyouran Reijou Nia Liston", persistentCast, isEphemeral = false)
+
+    // Verify persistent cast is on disk and RAM
+    val loadedPersistent = CharacterProfileManager.getProfile(null, "Kyouran Reijou Nia Liston")
+    assertEquals("Persistent cast contains 2 characters", 2, loadedPersistent?.characters?.size)
+
+    // Simulate Chunk 3 discovering a dynamic temporary speaker with isEphemeral = true
+    val dynamicDiscovered = CharacterEntity(
+        name = "Bandit Leader",
+        gender = "Male",
+        role = "Minor Antagonist",
+        viPronounHint = "họ / người này",
+        isEphemeral = true
+    )
+    val episodicCast = persistentCast.copy(
+        characters = persistentCast.characters + dynamicDiscovered
+    )
+    CharacterProfileManager.saveProfile(null, "Kyouran Reijou Nia Liston", episodicCast, isEphemeral = true)
+
+    // Active episode RAM should see 3 characters
+    val activeEpisodic = CharacterProfileManager.getProfile(null, "Kyouran Reijou Nia Liston")
+    assertEquals("Active episodic RAM sees 3 characters", 3, activeEpisodic?.characters?.size)
+    assertTrue("Active episodic RAM has Bandit Leader", activeEpisodic?.characters?.any { it.name == "Bandit Leader" } == true)
+
+    // Verify disk storage does not contain ephemeral character
+    val diskDir = File(testBaseDir, "ai_profiles")
+    val diskFiles = diskDir.listFiles() ?: emptyArray()
+    assertTrue("Disk profile file exists", diskFiles.isNotEmpty())
+    val diskContent = diskFiles.first().readText(Charsets.UTF_8)
+    assertTrue("Disk JSON does NOT contain Bandit Leader", !diskContent.contains("Bandit Leader"))
+
+    // Simulate episode end / new episode: reset episodic state
+    CharacterProfileManager.resetEpisodicState("Kyouran Reijou Nia Liston")
+    val postReset = CharacterProfileManager.getProfile(null, "Kyouran Reijou Nia Liston")
+    assertEquals("Post-reset profile reverts to persistent 2 characters", 2, postReset?.characters?.size)
+    assertTrue("Post-reset does NOT contain Bandit Leader", postReset?.characters?.none { it.name == "Bandit Leader" } == true)
+
     println("\n================================================================================")
-    println(">>> ALL 10 MILESTONE 2 TEST SUITES PASSED PERFECTLY!")
+    println(">>> ALL 12 MILESTONE 2 TEST SUITES PASSED PERFECTLY!")
     println("================================================================================")
 }

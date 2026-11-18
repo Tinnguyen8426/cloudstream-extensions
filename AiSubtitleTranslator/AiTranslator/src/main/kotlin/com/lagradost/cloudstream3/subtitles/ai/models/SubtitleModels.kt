@@ -2,6 +2,7 @@ package com.lagradost.cloudstream3.subtitles.ai.models
 
 import com.fasterxml.jackson.annotation.JsonAlias
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.annotation.JsonProperty
 
 /**
@@ -59,6 +60,7 @@ data class PersonaVariants(
  * Entity representation of a character within the story.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
+@JsonInclude(JsonInclude.Include.NON_NULL)
 data class CharacterEntity(
     val name: String,
     val aliases: List<String> = emptyList(),
@@ -67,7 +69,12 @@ data class CharacterEntity(
     val ageGroup: String = "adult",
     val role: String = "",
     @JsonProperty("personaVariants") @JsonAlias("persona_variants")
-    val personaVariants: PersonaVariants? = null
+    val personaVariants: PersonaVariants? = null,
+    @JsonProperty("viPronounHint") @JsonAlias("vi_pronoun_hint", "vi_pronoun")
+    val viPronounHint: String? = null,
+    @JsonProperty("isEphemeral") @JsonAlias("is_ephemeral")
+    @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+    val isEphemeral: Boolean = false
 )
 
 /**
@@ -78,6 +85,7 @@ data class CharacterRelationship(
     val pair: List<String> = emptyList(),
     val type: String = "peers",
     @JsonProperty("isEphemeral") @JsonAlias("is_ephemeral")
+    @JsonInclude(JsonInclude.Include.NON_DEFAULT)
     val isEphemeral: Boolean = false,
     @JsonProperty("addressMatrix") @JsonAlias("address_matrix")
     val addressMatrix: Map<String, Any> = emptyMap()
