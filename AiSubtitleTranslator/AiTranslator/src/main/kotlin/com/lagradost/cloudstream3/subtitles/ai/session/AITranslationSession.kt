@@ -14,7 +14,10 @@ import com.lagradost.cloudstream3.subtitles.ai.client.AITranslationClient
 import com.lagradost.cloudstream3.subtitles.ai.client.AITranslatorFactory
 import com.lagradost.cloudstream3.subtitles.ai.client.PacingGovernor
 import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import com.lagradost.cloudstream3.subtitles.ai.models.CharacterEntity
+import com.lagradost.cloudstream3.subtitles.ai.models.CharacterRelationship
 import com.lagradost.cloudstream3.subtitles.ai.models.ContextCue
 import com.lagradost.cloudstream3.subtitles.ai.models.MediaContext
 import com.lagradost.cloudstream3.subtitles.ai.models.SubtitleCue
@@ -61,6 +64,60 @@ class AITranslationSession(
         private const val MAX_CONCURRENT_CHUNK_WORKERS = 4
         private const val INTAKE_DEBOUNCE_MS = 200L
         private const val SKELETON_THRESHOLD_CHUNKS = 20 // Activate Strategy B if > 600 cues in auto mode
+
+        private val jsonMapper: ObjectMapper by lazy {
+            ObjectMapper().registerKotlinModule()
+        }
+
+        fun parseDiscoveredRelationships(rawResponse: String): List<CharacterRelationship> {
+            val trimmed = rawResponse.trim()
+            val cleanFences = if (trimmed.startsWith("```")) {
+                trimmed.removePrefix("```json").removePrefix("```").let {
+                    val endIdx = it.lastIndexOf("```")
+                    if (endIdx != -1) it.substring(0, endIdx) else it
+                }.trim()
+            } else trimmed
+
+            val result = mutableListOf<CharacterRelationship>()
+            try {
+                val rootNode = jsonMapper.readTree(cleanFences)
+                val relNode = when {
+                    rootNode.has("discovered_relationships") && rootNode.get("discovered_relationships").isArray ->
+                        rootNode.get("discovered_relationships")
+                    rootNode.has("discoveredRelationships") && rootNode.get("discoveredRelationships").isArray ->
+                        rootNode.get("discoveredRelationships")
+                    else -> null
+                }
+
+                if (relNode != null && relNode.isArray) {
+                    for (i in 0 until relNode.size()) {
+                        val elem = relNode.get(i)
+                        if (elem != null && elem.isObject) {
+                            val speaker = elem.get("speaker")?.asText()?.trim() ?: ""
+                            val target = elem.get("target")?.asText()?.trim() ?: ""
+                            val relation = elem.get("relation")?.asText()?.trim()
+                                ?: elem.get("type")?.asText()?.trim() ?: "peers"
+                            val address = elem.get("address")?.asText()?.trim() ?: ""
+                            if (speaker.isNotEmpty() && target.isNotEmpty()) {
+                                result.add(
+                                    CharacterRelationship(
+                                        pair = listOf(speaker, target),
+                                        type = relation,
+                                        isEphemeral = true,
+                                        addressMatrix = mapOf(
+                                            "speaker" to speaker,
+                                            "target" to target,
+                                            "address" to address
+                                        )
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
+            return result
+        }
 
         private val DANGLING_WORDS = setOf(
             "if", "when", "because", "although", "that", "to", "and", "but", "or", "as", "since",
@@ -641,6 +698,22 @@ class AITranslationSession(
                                 logI(TAG, "Chunk $index dynamically registered ${newChars.size} new characters (ephemeral). Total cast: ${updatedChars.size}")
                             }
                         }
+                    },
+                    onDiscoveredRelationships = { discoveredRels ->
+                        if (discoveredRels.isNotEmpty() && TranslatorConfig.enableCharacterProfiling) {
+                            val newRels = discoveredRels.filter { d ->
+                                registry.relationships.none { existing ->
+                                    existing.pair.map { it.lowercase() } == d.pair.map { it.lowercase() }
+                                }
+                            }.map { it.copy(isEphemeral = true) }
+
+                            if (newRels.isNotEmpty()) {
+                                val updatedRels = registry.relationships + newRels
+                                registry = registry.copy(relationships = updatedRels)
+                                CharacterProfileManager.saveProfile(context, mediaContext?.title, registry, isEphemeral = true)
+                                logI(TAG, "Chunk $index dynamically registered ${newRels.size} new relationships (ephemeral). Total relationships: ${updatedRels.size}")
+                            }
+                        }
                     }
                 )
 
@@ -738,7 +811,8 @@ class AITranslationSession(
         lookahead: List<ContextCue> = emptyList(),
         characterRegistry: TwoTierCharacterRegistry? = null,
         mediaContext: MediaContext? = null,
-        onDiscoveredCharacters: ((List<CharacterEntity>) -> Unit)? = null
+        onDiscoveredCharacters: ((List<CharacterEntity>) -> Unit)? = null,
+        onDiscoveredRelationships: ((List<CharacterRelationship>) -> Unit)? = null
     ): Map<Int, String> {
         var attempts = 0
         val maxAttempts = 3
@@ -760,6 +834,12 @@ class AITranslationSession(
                 if (result.isSuccess && result.translations.isNotEmpty()) {
                     if (!result.discoveredCharacters.isNullOrEmpty()) {
                         onDiscoveredCharacters?.invoke(result.discoveredCharacters)
+                    }
+                    if (!result.rawResponse.isNullOrBlank()) {
+                        val discoveredRels = parseDiscoveredRelationships(result.rawResponse)
+                        if (discoveredRels.isNotEmpty()) {
+                            onDiscoveredRelationships?.invoke(discoveredRels)
+                        }
                     }
                     return SubtitleReconciler.autoHealingReconcile(chunkCues, result.translations)
                 }

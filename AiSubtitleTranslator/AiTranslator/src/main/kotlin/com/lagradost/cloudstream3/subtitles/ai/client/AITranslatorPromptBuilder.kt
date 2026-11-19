@@ -24,12 +24,14 @@ object AITranslatorPromptBuilder {
     fun getLanguageDirectives(targetLang: String): String {
         return when (targetLang.lowercase(Locale.ROOT).trim()) {
             "vi" -> """
-                - Xưng hô nhân vật: Áp dụng nghiêm ngặt danh từ thân tộc chuẩn xác theo giới tính, tuổi tác và tôn ti trong bảng CHARACTER ROSTER (anh/em, chị/em, chú/cháu, bác/cháu, cô/cháu, ông/cháu, bố/con).
+                - Xưng hô nhân vật: Áp dụng danh từ thân tộc chuẩn xác theo giới tính, tuổi tác và vai vế thực tế trong bảng CHARACTER ROSTER (anh/em, chị/em, chú/cháu, bác/cháu, cô/cháu, ông/cháu, bố/con).
+                - Bạn bè học đường / cùng trang lứa: Ưu tiên xưng hô 'tớ - cậu', 'mình - bạn', gọi tên trực tiếp, hoặc 'mày - tao' khi thân mật suồng sã. Tuyệt đối KHÔNG áp đặt 'anh - em' lên bạn học cùng trang lứa.
+                - Độc thoại nội tâm (Internal Monologue): Khi nhân vật tự suy nghĩ một mình (không có người nghe trực tiếp), dùng 'mình', 'ta', 'tôi' hoặc lược bỏ đại từ nhân xưng. Tuyệt đối KHÔNG tự xưng 'anh / em' khi độc thoại một mình.
                 - Thứ bậc dòng tộc thắng tuổi tác sinh học: Trong quan hệ gia tộc, vai vế huyết thống ghi đè tuổi sinh học ("chú ít tuổi hơn cháu" vẫn phải dịch xưng hô "chú - cháu", tuyệt đối không dùng "anh - em").
                 - Xung đột công sở vs Tuổi tác: Khi sếp nam trẻ tuổi nói chuyện với nhân viên nữ lớn tuổi hơn, sếp tự xưng "tôi/em" và gọi nhân viên là "chị" (cấm trịch thượng dùng "anh - em" và cấm lố bịch dùng "chú - cháu").
                 - Bất biến Nghịch đảo Xưng hô (Dyadic Reciprocity): Nếu nhân vật A xưng 'anh' gọi 'em', nhân vật B bắt buộc phải xưng 'em' gọi 'anh'. Tuyệt đối không để nhân vật tự xưng 'tôi' khi đang đối thoại thân mật với người thân/người yêu.
                 - Xưng hô nhóm (Group Address): Khi phát ngôn hướng tới tập thể ("you guys", "all of you"), dùng danh từ tập thể phù hợp: "các anh", "các chị", "các em", "mọi người", cấm dùng "các bạn" máy móc.
-                - Tránh xa lối dịch máy vô cảm: Cấm sử dụng cặp xưng hô cứng nhắc 'tôi - bạn' trừ trường hợp hai người lớn xa lạ giao tiếp xã giao lần đầu.
+                - Quy tắc 'tôi - bạn': Không lạm dụng 'tôi - bạn' trong giao tiếp thân mật hoặc gia đình; nhưng ĐƯỢC PHÉP dùng khi hai người lớn xa lạ, đồng nghiệp xã giao hoặc trong bối cảnh hành chính/điều tra.
                 - Biến chuyển cảm xúc: Chỉ chuyển sang 'mày - tao' khi hai nhân vật thân thiết từ nhỏ hoặc khi xảy ra xung đột giận dữ nảy lửa.
             """.trimIndent()
 
@@ -87,6 +89,33 @@ object AITranslatorPromptBuilder {
         }
     }
 
+    fun getGenreDirectives(mediaContext: MediaContext?, targetLang: String): String {
+        if (mediaContext == null || targetLang.lowercase(Locale.ROOT).trim() != "vi") return ""
+        val combinedMeta = (mediaContext.tags + listOf(mediaContext.plot, mediaContext.title))
+            .joinToString(" ")
+            .lowercase(Locale.ROOT)
+
+        val isSchool = listOf("school", "học đường", "slice of life", "comedy", "youth", "shoujo", "đời thường").any { combinedMeta.contains(it) }
+        val isPeriod = listOf("historical", "cổ trang", "wuxia", "kiếm hiệp", "xianxia", "period", "samurai", "martial arts").any { combinedMeta.contains(it) }
+        val isFantasy = listOf("fantasy", "isekai", "magic", "dị giới", "tiên hiệp").any { combinedMeta.contains(it) }
+        val isModern = listOf("workplace", "công sở", "office", "police", "investigation", "sci-fi", "crime", "hiện đại").any { combinedMeta.contains(it) }
+
+        val sb = StringBuilder()
+        if (isSchool) {
+            sb.append("- Bối cảnh học đường / đời thường: Nhân vật bè bạn, cùng trang lứa ưu tiên xưng hô 'tớ - cậu', 'mình - bạn', gọi tên, hoặc 'mày - tao' khi thân mật suồng sã. CẤM dùng các danh xưng quý tộc/cổ phong như 'tiểu thư', 'thiếu gia', 'huynh đệ'.\n")
+        }
+        if (isPeriod) {
+            sb.append("- Bối cảnh cổ trang / kiếm hiệp: Áp dụng đại từ cổ phong phù hợp (huynh - đệ, tỷ - muội, công tử, tiểu thư, tiền bối - vãn bối, sư phụ - đồ nhi, ta - ngươi).\n")
+        }
+        if (isFantasy && !isPeriod) {
+            sb.append("- Bối cảnh fantasy / dị giới: Chỉ xưng hô 'tiểu thư / thiếu gia / ngài' khi nhân vật được xác nhận rõ là quý tộc hoặc lãnh chúa trong tác phẩm. Giữa các thành viên tổ đội mạo hiểm giả, dùng 'anh - em', 'cô - cậu', 'ông - tôi' một cách bình đẳng.\n")
+        }
+        if (isModern && !isSchool && !isPeriod) {
+            sb.append("- Bối cảnh hiện đại / công sở: Gọi theo chức vụ hoặc 'anh - em', 'chị - em', 'sếp - em', 'tôi - anh/chị'.\n")
+        }
+        return sb.toString().trimEnd()
+    }
+
     fun buildSystemPrompt(
         targetLang: String,
         characterRegistry: TwoTierCharacterRegistry?,
@@ -106,6 +135,8 @@ object AITranslatorPromptBuilder {
         }
 
         val directives = getLanguageDirectives(targetLang)
+        val genreDirectives = getGenreDirectives(mediaContext, targetLang)
+        val fullDirectives = if (genreDirectives.isNotBlank()) "$directives\n$genreDirectives" else directives
         val glossaryPrompt = if (!customGlossary.isNullOrBlank()) {
             "\n### 7. GLOSSARY TERMS:\nStrictly adhere to the following terminology mappings:\n$customGlossary\n"
         } else ""
@@ -135,10 +166,10 @@ object AITranslatorPromptBuilder {
             $rosterJson
 
             ### 2. TARGET LANGUAGE GRAMMATICAL DIRECTIVES ($targetLang):
-            $directives
+            $fullDirectives
 
             ### 3. CONTEXTUAL AWARENESS & SLIDING WINDOW RULES:
-            - CONTEXTUAL CONTINUITY & SELF-CORRECTION: Use [LOOKBEHIND_CONTEXT] to maintain conversational flow and tone. DISAMBIGUATION OVERRIDE: If lookbehind used a generic or assumed pronoun (e.g. 'anh/em' or 'tôi/bạn') but current or lookahead dialogue reveals explicit new evidence about a character's true identity, gender, title, or age hierarchy (e.g. vocatives like 'Lady', 'sir', 'young miss', 'father', 'sister', or character roster), you MUST OVERRIDE and CORRECT the pronoun immediately. DO NOT blindly persist prior mistaken pronouns. DO NOT translate or include them in output.
+            - CONTEXTUAL CONTINUITY & SELF-CORRECTION: Use [LOOKBEHIND_CONTEXT] to maintain conversational flow and tone. DISAMBIGUATION OVERRIDE: If lookbehind used a generic or assumed pronoun (e.g. 'anh/em' or 'tôi/bạn') but current or lookahead dialogue reveals explicit new evidence about a character's true identity, gender, title, or age hierarchy (e.g. vocatives like 'Lady', 'sir', 'young miss', 'father', 'sister'), you MUST OVERRIDE and CORRECT the pronoun immediately. DO NOT blindly persist prior mistaken pronouns. DO NOT translate or include them in output.
             - Cues under [LOOKAHEAD_CONTEXT] are upcoming source lines. Use them solely to anticipate replies, questions, or pronoun disambiguation. DO NOT translate or include them in output.
             - Translate ONLY the entries listed under [TARGET_CUES].
 

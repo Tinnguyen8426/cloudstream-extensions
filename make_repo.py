@@ -88,7 +88,7 @@ plugins = [
     {
         "url": f"{BASE_URL}/AiSubtitleTranslator.cs3",
         "status": 1,
-        "version": 6,
+        "version": 7,
         "name": "AI Subtitle Translator",
         "internalName": "AiSubtitleTranslator",
         "authors": [

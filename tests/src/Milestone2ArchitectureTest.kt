@@ -345,6 +345,18 @@ fun main() = runBlocking {
     assertTrue("Vietnamese prompt includes kinship directives", promptVi.contains("Thứ bậc dòng tộc"))
     assertTrue("Vietnamese prompt includes Dyadic Reciprocity", promptVi.contains("Bất biến Nghịch đảo Xưng hô"))
     assertTrue("Vietnamese prompt includes Character Roster", promptVi.contains("Arthur"))
+    assertTrue("Vietnamese prompt includes School/peer rules", promptVi.contains("Bạn bè học đường"))
+    assertTrue("Vietnamese prompt includes Internal Monologue rules", promptVi.contains("Độc thoại nội tâm"))
+    assertTrue("Vietnamese prompt includes relaxed tôi - bạn rules", promptVi.contains("Quy tắc 'tôi - bạn'"))
+    assertTrue("Prompt disambiguation override has NO character roster reference", !promptVi.contains("or character roster"))
+
+    val schoolContext = MediaContext(title = "Horimiya", tags = listOf("Romance", "School", "Comedy"))
+    val schoolPrompt = AITranslatorPromptBuilder.buildSystemPrompt("vi", registry, null, schoolContext)
+    assertTrue("School genre prompt includes school directives", schoolPrompt.contains("Bối cảnh học đường"))
+
+    val periodContext = MediaContext(title = "Kenshin", tags = listOf("Action", "Historical", "Samurai"))
+    val periodPrompt = AITranslatorPromptBuilder.buildSystemPrompt("vi", registry, null, periodContext)
+    assertTrue("Period genre prompt includes wuxia directives", periodPrompt.contains("Bối cảnh cổ trang"))
 
     val promptJa = AITranslatorPromptBuilder.getLanguageDirectives("ja")
     assertTrue("Japanese directives include Zero Anaphora and Benefactives", promptJa.contains("Zero Anaphora") && promptJa.contains("-te ageru"))
@@ -366,9 +378,9 @@ fun main() = runBlocking {
     assertTrue("Chunk 1 with lookbehind is NOT Bootstrap", !isBootstrap1)
 
     // -------------------------------------------------------------------------
-    // TEST 9: Bootstrap Discovered Characters Parser
+    // TEST 9: Bootstrap Discovered Characters & Relationships Parser
     // -------------------------------------------------------------------------
-    println("\n--- [Test 9: Bootstrap Discovered Characters Parser] ---")
+    println("\n--- [Test 9: Bootstrap Discovered Characters & Relationships Parser] ---")
     val bootstrapJson = """
         {
           "translations": [
@@ -378,6 +390,14 @@ fun main() = runBlocking {
           "discovered_characters": [
             {"name": "Arthur Vance", "gender": "male", "role": "Managing Director", "age_group": "adult"},
             {"name": "Elena Rostova", "gender": "female", "role": "Senior Analyst", "age_group": "adult"}
+          ],
+          "discovered_relationships": [
+            {
+              "speaker": "Arthur Vance",
+              "target": "Elena Rostova",
+              "relation": "workplace",
+              "address": "anh - em"
+            }
           ]
         }
     """.trimIndent()
@@ -393,6 +413,13 @@ fun main() = runBlocking {
     assertEquals("Discovered character 2 name", "Elena Rostova", discoveredChars[1].name)
     assertEquals("Discovered character 2 gender", "female", discoveredChars[1].gender)
 
+    val discoveredRels = AITranslationSession.parseDiscoveredRelationships(bootstrapJson)
+    assertEquals("Discovered relationships count", 1, discoveredRels.size)
+    assertEquals("Relationship speaker", "Arthur Vance", discoveredRels[0].addressMatrix["speaker"])
+    assertEquals("Relationship target", "Elena Rostova", discoveredRels[0].addressMatrix["target"])
+    assertEquals("Relationship address", "anh - em", discoveredRels[0].addressMatrix["address"])
+    assertEquals("Relationship pair", listOf("Arthur Vance", "Elena Rostova"), discoveredRels[0].pair)
+
     // -------------------------------------------------------------------------
     // TEST 10: Configuration Keys Persistence & Defaults
     // -------------------------------------------------------------------------
@@ -404,9 +431,9 @@ fun main() = runBlocking {
     assertEquals("maxChunkCues default", 28, TranslatorConfig.maxChunkCues)
 
     // -------------------------------------------------------------------------
-    // TEST 11: AniList Title Sanitizer & Vietnamese Pronoun Rule Engine
+    // TEST 11: AniList Title Sanitizer & Fact-Only Character Entity Model
     // -------------------------------------------------------------------------
-    println("\n--- [Test 11: AniList Title Sanitizer & Pronoun Rules] ---")
+    println("\n--- [Test 11: AniList Title Sanitizer & Fact-Only Character Entity Model] ---")
     val rawTorrent1 = "[Judas] Kyouran Reijou Nia Liston - 07 [1080p][HEVC x265 10bit][Multi-Subs].mkv"
     val cleaned1 = AniListCastResolver.cleanAnimeTitle(rawTorrent1)
     assertEquals("Cleaned Nia Liston title", "Kyouran Reijou Nia Liston", cleaned1)
@@ -419,24 +446,30 @@ fun main() = runBlocking {
     val cleaned3 = AniListCastResolver.cleanAnimeTitle(rawTorrent3)
     assertEquals("Cleaned Witch title", "Sekai Saikyou no Majo", cleaned3)
 
-    // Verify Vietnamese pronoun mappings
+    // Verify Ground-Truth Fact Character Entity Model (viPronounHint is null, no dead labels)
+    val entityFemaleMain = CharacterEntity(name = "Nia Liston", gender = "Female", role = "MAIN")
+    assertEquals("Female MAIN name", "Nia Liston", entityFemaleMain.name)
+    assertEquals("Female MAIN gender", "Female", entityFemaleMain.gender)
+    assertEquals("Female MAIN role", "MAIN", entityFemaleMain.role)
+    assertEquals("viPronounHint is null by default", null, entityFemaleMain.viPronounHint)
+
     val pFemaleMain = AniListCastResolver.inferVietnamesePronounHint("Female", "MAIN", "Nia Liston")
-    assertEquals("Female MAIN maps to tieu thu", "tiểu thư / cô ấy", pFemaleMain)
+    assertEquals("Female MAIN maps to null", null, pFemaleMain)
 
     val pFemaleSupporting = AniListCastResolver.inferVietnamesePronounHint("Female", "SUPPORTING", "Lynette Blanc")
-    assertEquals("Female SUPPORTING maps to em/hau gai", "em / hầu gái / cô ấy", pFemaleSupporting)
+    assertEquals("Female SUPPORTING maps to null", null, pFemaleSupporting)
 
     val pMaidAttendant = AniListCastResolver.inferVietnamesePronounHint("Female", "SUPPORTING", "Lynokis Funk (Maid)")
-    assertEquals("Maid attendant maps to em/hau gai", "em / hầu gái / cô ấy", pMaidAttendant)
+    assertEquals("Maid attendant maps to null", null, pMaidAttendant)
 
     val pMaleMain = AniListCastResolver.inferVietnamesePronounHint("Male", "MAIN", "Arthur Pendragon")
-    assertEquals("Male MAIN maps to thieu gia", "thiếu gia / anh ấy", pMaleMain)
+    assertEquals("Male MAIN maps to null", null, pMaleMain)
 
     val pMaleSupporting = AniListCastResolver.inferVietnamesePronounHint("Male", "SUPPORTING", "Neil Liston")
-    assertEquals("Male SUPPORTING maps to cau ay", "cậu ấy / anh ấy", pMaleSupporting)
+    assertEquals("Male SUPPORTING maps to null", null, pMaleSupporting)
 
     val pUnknown = AniListCastResolver.inferVietnamesePronounHint("unknown", "BACKGROUND", "Guard A")
-    assertEquals("Unknown/Neutral maps to ho/nguoi nay", "họ / người này", pUnknown)
+    assertEquals("Unknown/Neutral maps to null", null, pUnknown)
 
     // -------------------------------------------------------------------------
     // TEST 12: Dynamic Discovery Ephemeral RAM Scoping & Disk Isolation
@@ -449,8 +482,8 @@ fun main() = runBlocking {
     val persistentCast = TwoTierCharacterRegistry(
         mediaTitle = "Kyouran Reijou Nia Liston",
         characters = listOf(
-            CharacterEntity(name = "Nia Liston", gender = "Female", role = "MAIN", viPronounHint = "tiểu thư / cô ấy", isEphemeral = false),
-            CharacterEntity(name = "Neil Liston", gender = "Male", role = "SUPPORTING", viPronounHint = "cậu ấy / anh ấy", isEphemeral = false)
+            CharacterEntity(name = "Nia Liston", gender = "Female", role = "MAIN", viPronounHint = null, isEphemeral = false),
+            CharacterEntity(name = "Neil Liston", gender = "Male", role = "SUPPORTING", viPronounHint = null, isEphemeral = false)
         )
     )
     CharacterProfileManager.saveProfile(null, "Kyouran Reijou Nia Liston", persistentCast, isEphemeral = false)
@@ -458,13 +491,14 @@ fun main() = runBlocking {
     // Verify persistent cast is on disk and RAM
     val loadedPersistent = CharacterProfileManager.getProfile(null, "Kyouran Reijou Nia Liston")
     assertEquals("Persistent cast contains 2 characters", 2, loadedPersistent?.characters?.size)
+    assertEquals("Nia viPronounHint is null", null, loadedPersistent?.characters?.first()?.viPronounHint)
 
     // Simulate Chunk 3 discovering a dynamic temporary speaker with isEphemeral = true
     val dynamicDiscovered = CharacterEntity(
         name = "Bandit Leader",
         gender = "Male",
         role = "Minor Antagonist",
-        viPronounHint = "họ / người này",
+        viPronounHint = null,
         isEphemeral = true
     )
     val episodicCast = persistentCast.copy(

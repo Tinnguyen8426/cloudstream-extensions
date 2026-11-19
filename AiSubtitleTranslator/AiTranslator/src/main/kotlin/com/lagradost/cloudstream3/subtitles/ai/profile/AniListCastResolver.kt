@@ -92,27 +92,12 @@ object AniListCastResolver {
     }
 
     /**
-     * Maps character gender and role to authoritative Vietnamese pronoun hints.
-     * Prevents LLM honorific drift and misaddressing.
+     * Deprecated: Vietnamese pronoun hints should not be hardcoded at character entity level.
+     * Pronouns are dynamic dyadic relations between speakers, not static node attributes.
      */
-    fun inferVietnamesePronounHint(gender: String?, role: String?, name: String = ""): String {
-        val g = gender?.trim()?.lowercase(Locale.ROOT) ?: ""
-        val r = role?.trim()?.uppercase(Locale.ROOT) ?: ""
-        val n = name.trim().lowercase(Locale.ROOT)
-
-        val isMaid = n.contains("maid") || n.contains("hầu gái") || n.contains("attendant") ||
-                n.contains("servant") || n.contains("lynokis") || r.contains("MAID")
-
-        val isFemale = g.contains("female")
-        val isMale = !isFemale && g.contains("male")
-
-        return when {
-            isFemale && r == "MAIN" -> "tiểu thư / cô ấy"
-            isFemale && (r == "SUPPORTING" || isMaid) -> "em / hầu gái / cô ấy"
-            isMale && r == "MAIN" -> "thiếu gia / anh ấy"
-            isMale && r == "SUPPORTING" -> "cậu ấy / anh ấy"
-            else -> "họ / người này"
-        }
+    @Deprecated("Vietnamese pronoun hints should not be hardcoded at character entity level. Relationships are dyadic.")
+    fun inferVietnamesePronounHint(gender: String?, role: String?, name: String = ""): String? {
+        return null
     }
 
     /**
@@ -168,15 +153,13 @@ object AniListCastResolver {
                         val name = full ?: native ?: continue
                         val gender = node.get("gender")?.asText()?.takeIf { it.isNotBlank() } ?: "unknown"
                         val aliases = if (native != null && native != name) listOf(native) else emptyList()
-                        val viPronoun = inferVietnamesePronounHint(gender, role, name)
-
                         result.add(
                             CharacterEntity(
                                 name = name,
                                 aliases = aliases,
                                 gender = gender,
                                 role = role,
-                                viPronounHint = viPronoun,
+                                viPronounHint = null,
                                 isEphemeral = false
                             )
                         )
