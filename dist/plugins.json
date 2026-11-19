@@ -2,14 +2,14 @@
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/AiSubtitleTranslator.cs3",
         "status": 1,
-        "version": 9,
+        "version": 10,
         "name": "AI Subtitle Translator",
         "internalName": "AiSubtitleTranslator",
         "authors": [
             "AI Subtitle Translator"
         ],
         "description": "Dịch phụ đề phim tự động bằng AI (Gemini, OpenAI, Claude) trực tiếp trên CloudStream với độ trễ 0ms và hỗ trợ xử lý ngữ cảnh đa ngôn ngữ",
-        "fileSize": 159388,
+        "fileSize": 160506,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "vi",
         "tvTypes": [
@@ -23,6 +23,6 @@
         ],
         "iconUrl": "https://translate.google.com/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-30826c53f4d0115aae2b9bceb8f020d4c6c40770ce00436eb01aa3af34931e5a"
+        "fileHash": "sha256-b7ebe19edeb32938d2658bc0ae233710f665f97442cb722d17b90fc781020950"
     }
 ]
