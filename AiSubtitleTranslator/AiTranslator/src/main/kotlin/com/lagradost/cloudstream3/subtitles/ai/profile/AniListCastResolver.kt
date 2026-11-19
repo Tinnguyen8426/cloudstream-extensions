@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.subtitles.ai.models.CharacterEntity
 import com.lagradost.cloudstream3.subtitles.ai.models.TwoTierCharacterRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -49,14 +50,11 @@ object AniListCastResolver {
     private val mapper: ObjectMapper = ObjectMapper().registerKotlinModule()
 
     private val defaultClient: OkHttpClient by lazy {
-        try {
-            com.lagradost.cloudstream3.app.baseClient
-        } catch (_: Throwable) {
-            OkHttpClient.Builder()
-                .connectTimeout(5, TimeUnit.SECONDS)
-                .readTimeout(5, TimeUnit.SECONDS)
-                .build()
-        }
+        OkHttpClient.Builder()
+            .connectTimeout(2, TimeUnit.SECONDS)
+            .readTimeout(2, TimeUnit.SECONDS)
+            .callTimeout(3, TimeUnit.SECONDS)
+            .build()
     }
 
     /**
@@ -108,68 +106,70 @@ object AniListCastResolver {
         val cleanTitle = cleanAnimeTitle(rawTitle)
         if (cleanTitle.isBlank()) return emptyList()
 
-        return withContext(Dispatchers.IO) {
-            try {
-                val client = httpClient ?: defaultClient
+        return withTimeoutOrNull(3000L) {
+            withContext(Dispatchers.IO) {
+                try {
+                    val client = httpClient ?: defaultClient
 
-                val payload = mapOf(
-                    "query" to ANILIST_QUERY,
-                    "variables" to mapOf("search" to cleanTitle)
-                )
-                val jsonBody = mapper.writeValueAsString(payload)
-                val requestBody = jsonBody.toRequestBody("application/json; charset=utf-8".toMediaType())
+                    val payload = mapOf(
+                        "query" to ANILIST_QUERY,
+                        "variables" to mapOf("search" to cleanTitle)
+                    )
+                    val jsonBody = mapper.writeValueAsString(payload)
+                    val requestBody = jsonBody.toRequestBody("application/json; charset=utf-8".toMediaType())
 
-                val request = Request.Builder()
-                    .url(ANILIST_ENDPOINT)
-                    .post(requestBody)
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "application/json")
-                    .header("User-Agent", "CloudStream-AiTranslator/1.0")
-                    .build()
+                    val request = Request.Builder()
+                        .url(ANILIST_ENDPOINT)
+                        .post(requestBody)
+                        .header("Content-Type", "application/json")
+                        .header("Accept", "application/json")
+                        .header("User-Agent", "CloudStream-AiTranslator/1.0")
+                        .build()
 
-                client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        return@withContext emptyList()
-                    }
+                    client.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            return@withContext emptyList()
+                        }
 
-                    val bodyString = response.body?.string() ?: return@withContext emptyList()
-                    val root = mapper.readTree(bodyString)
+                        val bodyString = response.body?.string() ?: return@withContext emptyList()
+                        val root = mapper.readTree(bodyString)
 
-                    val errors = root.get("errors")
-                    if (errors != null && errors.isArray && !errors.isEmpty) {
-                        return@withContext emptyList()
-                    }
+                        val errors = root.get("errors")
+                        if (errors != null && errors.isArray && !errors.isEmpty) {
+                            return@withContext emptyList()
+                        }
 
-                    val data = root.get("data")?.get("Media") ?: return@withContext emptyList()
-                    val edges = data.get("characters")?.get("edges") ?: return@withContext emptyList()
+                        val data = root.get("data")?.get("Media") ?: return@withContext emptyList()
+                        val edges = data.get("characters")?.get("edges") ?: return@withContext emptyList()
 
-                    val result = mutableListOf<CharacterEntity>()
-                    for (edge in edges) {
-                        val role = edge.get("role")?.asText() ?: ""
-                        val node = edge.get("node") ?: continue
-                        val nameNode = node.get("name")
-                        val full = nameNode?.get("full")?.asText()?.takeIf { it.isNotBlank() }
-                        val native = nameNode?.get("native")?.asText()?.takeIf { it.isNotBlank() }
-                        val name = full ?: native ?: continue
-                        val gender = node.get("gender")?.asText()?.takeIf { it.isNotBlank() } ?: "unknown"
-                        val aliases = if (native != null && native != name) listOf(native) else emptyList()
-                        result.add(
-                            CharacterEntity(
-                                name = name,
-                                aliases = aliases,
-                                gender = gender,
-                                role = role,
-                                viPronounHint = null,
-                                isEphemeral = false
+                        val result = mutableListOf<CharacterEntity>()
+                        for (edge in edges) {
+                            val role = edge.get("role")?.asText() ?: ""
+                            val node = edge.get("node") ?: continue
+                            val nameNode = node.get("name")
+                            val full = nameNode?.get("full")?.asText()?.takeIf { it.isNotBlank() }
+                            val native = nameNode?.get("native")?.asText()?.takeIf { it.isNotBlank() }
+                            val name = full ?: native ?: continue
+                            val gender = node.get("gender")?.asText()?.takeIf { it.isNotBlank() } ?: "unknown"
+                            val aliases = if (native != null && native != name) listOf(native) else emptyList()
+                            result.add(
+                                CharacterEntity(
+                                    name = name,
+                                    aliases = aliases,
+                                    gender = gender,
+                                    role = role,
+                                    viPronounHint = null,
+                                    isEphemeral = false
+                                )
                             )
-                        )
+                        }
+                        result
                     }
-                    result
+                } catch (_: Throwable) {
+                    emptyList()
                 }
-            } catch (_: Throwable) {
-                emptyList()
             }
-        }
+        } ?: emptyList()
     }
 
     /**

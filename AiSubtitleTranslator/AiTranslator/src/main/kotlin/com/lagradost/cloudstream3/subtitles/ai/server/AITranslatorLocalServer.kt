@@ -273,7 +273,7 @@ object AITranslatorLocalServer {
             if (!fileToServe.exists() || !fileToServe.isFile) {
                 val sessionKey = fileName.removeSuffix(".srt")
                 val session = activeSessions[sessionKey] ?: activeSessions[fileName] ?: activeSessions[rawFileName]
-                if (session != null && !session.isCompleted && !session.isCancelled) {
+                if (session != null && !session.isCompleted && session.completedFile == null && !session.isCancelled) {
                     logI(TAG, "Active translation session in flight for $fileName. Awaiting completion (timeout: 60s)...")
                     session.awaitCompletion(60000L)
                 }

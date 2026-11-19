@@ -259,10 +259,10 @@ class AITranslationSession(
         private set
 
     fun awaitCompletion(timeoutMs: Long = 60000L): Boolean {
-        if (isCompleted) return true
+        if (completedFile != null || isCompleted) return true
         if (isCancelled) return false
         return try {
-            completionLatch.await(timeoutMs, TimeUnit.MILLISECONDS) && isCompleted
+            completionLatch.await(timeoutMs, TimeUnit.MILLISECONDS) && (completedFile != null || isCompleted)
         } catch (_: InterruptedException) {
             false
         }
@@ -589,7 +589,7 @@ class AITranslationSession(
             activeContextWindow = window
 
             val pacingInterval = if (clientOverride != null) 0L else when (TranslatorConfig.provider) {
-                TranslatorConfig.PROVIDER_GEMINI -> 4000L
+                TranslatorConfig.PROVIDER_GEMINI -> 1500L
                 TranslatorConfig.PROVIDER_ANTHROPIC -> 2000L
                 TranslatorConfig.PROVIDER_OPENAI -> 1000L
                 else -> 1000L
@@ -703,6 +703,25 @@ class AITranslationSession(
                     }
                     window.recordFinalizedCues(chunkCues, translatedChunk)
                     SubtitleCacheManager.saveChunk(context, cacheKey, index, translatedChunk)
+
+                    // Progressive interim delivery: After Chunk 0 completes, assemble an interim SubRip file
+                    // (translated Chunk 0 cues + raw cues for remainder), register it with AITranslatorLocalServer,
+                    // and set completedFile = interimFile so ExoPlayer can begin playback immediately.
+                    if (index == 0 && chunks.size > 1) {
+                        try {
+                            val interimReconciled = cues.associate { cue ->
+                                cue.index to (existingTranslations[cue.index] ?: cue.rawText)
+                            }
+                            val interimSrt = SubtitleReconstructor.buildSubRip(cues, interimReconciled)
+                            val interimFile = SubtitleCacheManager.saveFullFile(context, "${cacheKey}_interim", interimSrt)
+                            completedFile = interimFile
+                            AITranslatorLocalServer.registerSessionKeyFile(sessionKey, interimFile)
+                            completionLatch.countDown()
+                            logI(TAG, "Chunk 0 interim subtitle assembled and registered (${interimFile.length()} bytes) for session $sessionKey")
+                        } catch (e: Throwable) {
+                            logW(TAG, "Failed to assemble interim subtitle for Chunk 0: ${e.message}")
+                        }
+                    }
 
                     if (TranslatorConfig.showProgressHUD) {
                         try {

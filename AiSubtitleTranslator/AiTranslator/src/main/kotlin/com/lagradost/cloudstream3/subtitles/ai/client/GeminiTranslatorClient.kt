@@ -45,9 +45,9 @@ class GeminiTranslatorClient(
             com.lagradost.cloudstream3.app.baseClient
         } catch (_: Throwable) {
             OkHttpClient.Builder()
-                .connectTimeout(30, TimeUnit.SECONDS)
-                .readTimeout(60, TimeUnit.SECONDS)
-                .writeTimeout(60, TimeUnit.SECONDS)
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .writeTimeout(20, TimeUnit.SECONDS)
                 .build()
         }
     }
@@ -86,7 +86,7 @@ class GeminiTranslatorClient(
 
         val endpointUrl = buildGeminiUrl(baseUrl, modelName)
         val isBootstrap = AITranslatorPromptBuilder.isBootstrap(lookbehind, characterRegistry)
-        val includeDiscoveredCharacters = isBootstrap || TranslatorConfig.enableCharacterProfiling
+        val includeDiscoveredCharacters = isBootstrap && TranslatorConfig.enableCharacterProfiling
         val sampleText = cues.firstOrNull()?.rawText ?: ""
         val systemInstruction = AITranslatorPromptBuilder.buildSystemPrompt(
             targetLang = targetLang,
@@ -140,11 +140,9 @@ class GeminiTranslatorClient(
                             "type" to "OBJECT",
                             "properties" to linkedMapOf(
                                 "id" to mapOf("type" to "INTEGER"),
-                                "act" to mapOf("type" to "STRING", "enum" to listOf("dialogue", "monologue")),
-                                "role" to mapOf("type" to "STRING", "enum" to listOf("senior", "junior", "peer", "solo")),
                                 "text" to mapOf("type" to "STRING")
                             ),
-                            "required" to listOf("id", "act", "role", "text")
+                            "required" to listOf("id", "text")
                         )
                     )
                 ),
@@ -190,7 +188,7 @@ class GeminiTranslatorClient(
             reqBuilder.header("x-goog-api-key", apiKey.trim())
         }
 
-        val maxAttempts = 5
+        val maxAttempts = 2
         var lastError = "Unknown Gemini error"
 
         for (attempt in 0 until maxAttempts) {
@@ -314,7 +312,7 @@ class GeminiTranslatorClient(
          * Computes exponential backoff delay with full jitter for transient 15 RPM throttling.
          */
         fun calculateBackoffMs(attempt: Int): Long {
-            return (5000L * (1 shl attempt.coerceAtMost(3))) + (0..2000).random()
+            return (1000L * (1 shl attempt.coerceAtMost(2))) + (0..500).random()
         }
     }
 }
