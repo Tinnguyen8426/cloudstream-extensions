@@ -21,6 +21,63 @@ object AITranslatorPromptBuilder {
         return lookbehind.isEmpty() && (characterRegistry == null || characterRegistry.characters.isEmpty())
     }
 
+    fun isJapaneseScript(text: String?): Boolean {
+        if (text.isNullOrBlank()) return false
+        for (i in 0 until text.length) {
+            val c = text[i]
+            if ((c in '\u3040'..'\u309F') || // Hiragana
+                (c in '\u30A0'..'\u30FF') || // Katakana
+                (c in '\u31F0'..'\u31FF') || // Katakana Phonetic Extensions
+                (c in '\u4E00'..'\u9FAF')    // CJK Unified Ideographs (Kanji)
+            ) {
+                return true
+            }
+        }
+        return false
+    }
+
+    fun getJapaneseSourceDirectives(): String {
+        return """
+            - MANDATORY 1-TO-1 CUE RETENTION:
+              * You MUST return exactly one translation object for every single input cue ID.
+              * Even for one-word Japanese interjections (e.g. 'はい', 'うん', 'えっ？', 'あ…', '何？', '嘘'), NEVER omit, drop, or merge them with neighboring cues.
+              * The count of output translations MUST strictly equal the count of input cues. Dropping cues is strictly forbidden.
+            - YAKUWARIGO LINGUISTIC MATRIX (役割語 - Role Language) & PRONOUN LOCKING:
+              1. First-Person Pronouns (一人称) -> Speaker Persona & Social Identity:
+                 * 俺 (Ore): Male, confident, rugged/casual, everyday informal -> translate as 'anh' / 'tớ' / 'tao' / 'ta'.
+                 * 僕 (Boku): Male youth/boy, gentle, polite, student -> translate as 'em' / 'con' / 'tớ' / 'cháu' / 'mình'.
+                 * 私 (Watashi): Standard formal, polite adult female or professional male -> translate as 'tôi' / 'em' / 'chị' / 'mình'.
+                 * あたし (Atashi) / うち (Uchi): Young female, lively/casual or cute -> translate as 'em' / 'tớ' / 'mình'.
+                 * わし (Washi): Elder man (rōjin / grandfather) -> translate as 'ông' / 'lão' / 'bác' / 'ta'.
+                 * 我 / 吾輩 / 我輩 (Ware / Wagahai): Powerful being, monster, arrogant noble, mad scientist -> translate as 'ta' / 'bổn tọa'.
+                 * 拙者 (Sessha): Samurai, ninja, traditional warrior -> translate as 'tại hạ'.
+                 * 妾 (Warawa): Aristocratic lady, queen, empress -> translate as 'thiếp' / 'bổn cung'.
+                 * 小生 (Shousei): Humble male scholar/intellectual -> translate as 'tôi' / 'kẻ hèn này'.
+              2. Second-Person Pronouns (二人称) -> Listener Standing & Dyadic Relation:
+                 * お前 (Omae): Superior to subordinate, or male friend to close male friend -> translate as 'em' / 'mày' / 'cậu'.
+                 * あんた (Anta): Familiar casual, family member, close friend -> translate as 'anh' / 'em' / 'cậu' / 'mày'.
+                 * 君 (Kimi): Male speaker to equal or junior (gentle, friendly, affectionate) -> translate as 'em' / 'cậu' / 'bạn'.
+                 * 貴様 (Kisama) / 手前 (Temee): Hostile, disdainful, enraged in combat -> translate as 'mày' / 'ngươi' / 'thằng kia'.
+                 * あなた (Anata): Polite social address; OR affectionate wife-to-husband ('darling') -> translate as 'anh' (if wife to husband) or 'bạn' / 'cậu' / 'ông/bà'.
+                 * お主 (Onushi) / 貴殿 (Kiden): Elder/military traditional address -> translate as 'ngươi' / 'các hạ' / 'thí chủ'.
+              3. Sentence Endings & Copula (語尾・終助詞) -> Persona Stereotypes:
+                 * 〜だぜ / 〜ぜ / 〜ぞ: Shounen male hero, bold, direct. Never a woman or elderly person.
+                 * 〜わ / 〜わよ / 〜かしら / 〜のよ: Feminine gentle, young lady or mature woman. Never a rough male.
+                 * 〜じゃ / 〜のじゃ / 〜おる / 〜わい: Elder speech (Rōjin-go - 老人語), wise old man or mentor.
+                 * 〜ですわ / 〜ますの / 〜あそばせ: Aristocrat / high-class lady (Ojou-sama-go), elegant nobility.
+                 * 〜でござる / 〜であります: Samurai, ninja, or military personnel.
+                 * 〜っす / 〜す: Junior/subordinate to senior (Kouhai-go) -> STRICTLY LOCK AS JUNIOR ('em' / 'cháu').
+                 * 〜なのだ / 〜のだ: Mascot, innocent / energetic character -> cute informal pronouns.
+              4. Politeness & Hierarchy (Keigo vs Tamekuchi):
+                 * Polite/Honorific (です/ます, いらっしゃる, おっしゃる): Junior speaking to senior, or respectful social distance.
+                 * Humble (Kenjougo: 申す, 参る, いただく): Speaker lowers self -> STRICTLY LOCK AS JUNIOR ('em' / 'cháu').
+                 * Casual (タメ口 - Tamekuchi: だ, dictionary form, 〜ね): Equals, peers, or senior speaking down to junior.
+              5. Japanese Internal Monologue Markers:
+                 * Sentences ending in non-interactive questions (〜だろうか, 〜のか, 〜か, 〜かしら), plain dictionary forms without keigo, or introspective exclamations (〜とはな, 〜まさか, 〜なんてこった) indicate Internal Monologue.
+                 * Set act: 'monologue', role: 'solo', and use 'mình', 'ta', 'tôi' or omit pronouns entirely; NEVER use 'anh' or 'em'.
+        """.trimIndent()
+    }
+
     fun getLanguageDirectives(targetLang: String): String {
         return when (targetLang.lowercase(Locale.ROOT).trim()) {
             "vi" -> """
@@ -127,7 +184,9 @@ object AITranslatorPromptBuilder {
         targetLang: String,
         characterRegistry: TwoTierCharacterRegistry?,
         customGlossary: String?,
-        mediaContext: MediaContext? = null
+        mediaContext: MediaContext? = null,
+        sourceLang: String? = null,
+        sampleText: String? = null
     ): String {
         val rosterJson = if (characterRegistry != null &&
             (characterRegistry.characters.isNotEmpty() || characterRegistry.relationships.isNotEmpty())
@@ -144,6 +203,12 @@ object AITranslatorPromptBuilder {
         val directives = getLanguageDirectives(targetLang)
         val genreDirectives = getGenreDirectives(mediaContext, targetLang)
         val fullDirectives = if (genreDirectives.isNotBlank()) "$directives\n$genreDirectives" else directives
+        val isJapanese = sourceLang?.lowercase(Locale.ROOT)?.trim() in listOf("ja", "jpn") ||
+                isJapaneseScript(sampleText)
+        val japanesePrompt = if (isJapanese) {
+            "\n\n### 2.1. SOURCE LANGUAGE (JAPANESE) YAKUWARIGO & RETENTION DIRECTIVES:\n${getJapaneseSourceDirectives()}"
+        } else ""
+
         val glossaryPrompt = if (!customGlossary.isNullOrBlank()) {
             "\n### 7. GLOSSARY TERMS:\nStrictly adhere to the following terminology mappings:\n$customGlossary\n"
         } else ""
@@ -173,7 +238,7 @@ object AITranslatorPromptBuilder {
             $rosterJson
 
             ### 2. TARGET LANGUAGE GRAMMATICAL DIRECTIVES ($targetLang):
-            $fullDirectives
+            $fullDirectives$japanesePrompt
 
             ### 3. CONTEXTUAL AWARENESS & SLIDING WINDOW RULES:
             - 3-TIER HIERARCHY OF TRUTH & ANTI-CASCADING OVERRIDE:

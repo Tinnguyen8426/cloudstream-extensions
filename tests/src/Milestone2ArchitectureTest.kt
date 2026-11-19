@@ -12,6 +12,7 @@ import com.lagradost.cloudstream3.subtitles.ai.profile.AniListCastResolver
 import com.lagradost.cloudstream3.subtitles.ai.profile.CharacterProfileManager
 import com.lagradost.cloudstream3.subtitles.ai.session.AITranslationSession
 import com.lagradost.cloudstream3.subtitles.ai.session.DialogueContextWindow
+import com.lagradost.cloudstream3.subtitles.ai.session.SubtitleReconciler
 import kotlinx.coroutines.runBlocking
 import java.io.File
 
@@ -22,6 +23,8 @@ fun assertTrue(msg: String, condition: Boolean) {
     }
     println("  [PASS] $msg")
 }
+
+fun assertFalse(msg: String, condition: Boolean) = assertTrue(msg, !condition)
 
 fun assertEquals(msg: String, expected: Any?, actual: Any?) {
     if (expected != actual) {
@@ -550,7 +553,99 @@ fun main() = runBlocking {
     assertEquals("Post-reset profile reverts to persistent 2 characters", 2, postReset?.characters?.size)
     assertTrue("Post-reset does NOT contain Bandit Leader", postReset?.characters?.none { it.name == "Bandit Leader" } == true)
 
+    // -------------------------------------------------------------------------
+    // TEST 13: Japanese Yakuwarigo Pragmatics, Kitsunekko Parser Healing & Interjection Recovery
+    // -------------------------------------------------------------------------
+    println("\n--- [Test 13: Japanese Yakuwarigo Pragmatics & Kitsunekko Parser Healing] ---")
+
+    // 13.1. SubtitleParser flexible timecodes: fullwidth whitespace, arrows ->, ~, centiseconds
+    val srtGluedContent = """
+        1
+        00:01:23,45　->　00:01:25,60
+        俺の勝ちだぜ！
+
+        2
+        00:01:25,800 ~ 00:01:25,800
+        「うん。」
+    """.trimIndent()
+    val parsedSrtGlued = SubtitleParser.parse(srtGluedContent)
+    assertEquals("Extracted 2 cues from glued/flexible SRT", 2, parsedSrtGlued.size)
+    assertEquals("Cue 1 startMs", 83450L, parsedSrtGlued[0].startMs)
+    assertEquals("Cue 1 endMs", 85600L, parsedSrtGlued[0].endMs)
+    assertEquals("Cue 2 auto-healed +1500ms when endMs <= startMs", 85800L + 1500L, parsedSrtGlued[1].endMs)
+
+    // 13.2. SubtitleParser ASS auto-healing & vector drawing stripping
+    val assContent = """
+        [Script Info]
+        Title: Kitsunekko Test
+
+        [Events]
+        Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+        Dialogue: 0,0:01:10.00,0:01:10.00,Default,,0,0,0,,{\pos(192,250)}わしの番じゃ。
+        Dialogue: 0,0:01:12.00,0:01:15.50,Default,,0,0,0,,{\p1}m 0 0 l 100 0 l 100 100{\p0}{\an8}待って！
+    """.trimIndent()
+    val parsedAss = SubtitleParser.parse(assContent)
+    assertEquals("Extracted 2 ASS cues", 2, parsedAss.size)
+    assertEquals("ASS Cue 1 auto-healed +1500ms", 70000L + 1500L, parsedAss[0].endMs)
+    assertTrue("ASS Cue 1 preserves pos tag shielded", parsedAss[0].maskedText.contains("[[TAG_1]]"))
+    assertTrue("ASS Cue 1 raw dialogue retained", parsedAss[0].rawText.contains("わしの番じゃ。"))
+    assertEquals("ASS Cue 2 stripped vector drawing", "{\\an8}待って！", parsedAss[1].rawText)
+    assertTrue("ASS Cue 2 preserves an8 tag shielded", parsedAss[1].maskedText.contains("[[TAG_1]]"))
+
+    // 13.3. AITranslatorPromptBuilder Japanese script detection
+    assertTrue("isJapaneseScript detects Hiragana", AITranslatorPromptBuilder.isJapaneseScript("こんにちは"))
+    assertTrue("isJapaneseScript detects Katakana", AITranslatorPromptBuilder.isJapaneseScript("テスト"))
+    assertTrue("isJapaneseScript detects Kanji", AITranslatorPromptBuilder.isJapaneseScript("日本語"))
+    assertFalse("isJapaneseScript returns false for English", AITranslatorPromptBuilder.isJapaneseScript("Hello world"))
+    assertFalse("isJapaneseScript returns false for null/empty", AITranslatorPromptBuilder.isJapaneseScript(""))
+
+    // 13.4. Yakuwarigo linguistic directives in System Prompt
+    val promptJaSource = AITranslatorPromptBuilder.buildSystemPrompt("vi", null, null, sourceLang = "ja")
+    assertTrue("Prompt contains Section 2.1 header", promptJaSource.contains("### 2.1. SOURCE LANGUAGE (JAPANESE) YAKUWARIGO & RETENTION DIRECTIVES:"))
+    assertTrue("Prompt contains Mandatory 1-to-1 Cue Retention", promptJaSource.contains("MANDATORY 1-TO-1 CUE RETENTION"))
+    assertTrue("Prompt contains Ore pronoun mapping", promptJaSource.contains("俺 (Ore)"))
+    assertTrue("Prompt contains Boku pronoun mapping", promptJaSource.contains("僕 (Boku)"))
+    assertTrue("Prompt contains Washi elder mapping", promptJaSource.contains("わし (Washi)"))
+    assertTrue("Prompt contains Atashi female mapping", promptJaSource.contains("あたし (Atashi)"))
+    assertTrue("Prompt contains sentence endings da ze / ssu", promptJaSource.contains("〜だぜ") && promptJaSource.contains("〜っす"))
+    assertTrue("Prompt contains Japanese Internal Monologue markers", promptJaSource.contains("〜だろうか") && promptJaSource.contains("〜のか"))
+
+    // Auto-detection via sampleText
+    val promptDetectedJa = AITranslatorPromptBuilder.buildSystemPrompt("vi", null, null, sampleText = "わしの番じゃ。")
+    assertTrue("Prompt injected Yakuwarigo via sampleText Japanese detection", promptDetectedJa.contains("YAKUWARIGO LINGUISTIC MATRIX"))
+
+    // Non-Japanese sourceLang should omit Section 2.1
+    val promptEnSource = AITranslatorPromptBuilder.buildSystemPrompt("vi", null, null, sourceLang = "en", sampleText = "Good morning.")
+    assertFalse("English prompt omits Section 2.1", promptEnSource.contains("2.1. SOURCE LANGUAGE (JAPANESE) YAKUWARIGO"))
+
+    // 13.5. SubtitleReconciler Micro-Healing of Japanese Interjections
+    assertEquals("healJapaneseInterjection un", "Ừ", SubtitleReconciler.healJapaneseInterjection("うん"))
+    assertEquals("healJapaneseInterjection with quotes", "Vâng", SubtitleReconciler.healJapaneseInterjection("「はい」"))
+    assertEquals("healJapaneseInterjection with Japanese ideographic period", "Vâng", SubtitleReconciler.healJapaneseInterjection("はい。"))
+    assertEquals("healJapaneseInterjection with punctuation and quotes", "Hả?", SubtitleReconciler.healJapaneseInterjection("「えっ！？」"))
+    assertEquals("healJapaneseInterjection uso", "Không thể nào...", SubtitleReconciler.healJapaneseInterjection("嘘。"))
+    assertEquals("healJapaneseInterjection arigatou", "Cảm ơn.", SubtitleReconciler.healJapaneseInterjection("ありがとう"))
+    assertEquals("healJapaneseInterjection gomen", "Xin lỗi.", SubtitleReconciler.healJapaneseInterjection("ごめん"))
+    assertEquals("healJapaneseInterjection non-interjection returns null", null, SubtitleReconciler.healJapaneseInterjection("こんにちは世界"))
+
+    // SubtitleReconciler autoHealingReconcile recovering dropped interjection
+    val testCues = listOf(
+        SubtitleCue(index = 1, startMs = 1000L, endMs = 2000L, rawText = "俺の番だ！"),
+        SubtitleCue(index = 2, startMs = 2100L, endMs = 3000L, rawText = "「うん。」"),
+        SubtitleCue(index = 3, startMs = 3100L, endMs = 4000L, rawText = "行くぞ！")
+    )
+    val llmOmittedOutput = mapOf(
+        1 to "Đến lượt tao rồi!",
+        // Cue 2 was dropped by LLM
+        3 to "Đi thôi!"
+    )
+    val healedResult = SubtitleReconciler.autoHealingReconcile(testCues, llmOmittedOutput)
+    assertEquals("Healed result has all 3 cues", 3, healedResult.size)
+    assertEquals("Cue 1 translation", "Đến lượt tao rồi!", healedResult[1])
+    assertEquals("Cue 2 micro-healed interjection", "Ừ", healedResult[2])
+    assertEquals("Cue 3 translation", "Đi thôi!", healedResult[3])
+
     println("\n================================================================================")
-    println(">>> ALL 12 MILESTONE 2 TEST SUITES PASSED PERFECTLY!")
+    println(">>> ALL 13 MILESTONE 2 TEST SUITES PASSED PERFECTLY!")
     println("================================================================================")
 }

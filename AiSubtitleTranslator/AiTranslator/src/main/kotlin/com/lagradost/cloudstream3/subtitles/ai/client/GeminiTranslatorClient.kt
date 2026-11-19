@@ -87,7 +87,15 @@ class GeminiTranslatorClient(
         val endpointUrl = buildGeminiUrl(baseUrl, modelName)
         val isBootstrap = AITranslatorPromptBuilder.isBootstrap(lookbehind, characterRegistry)
         val includeDiscoveredCharacters = isBootstrap || TranslatorConfig.enableCharacterProfiling
-        val systemInstruction = AITranslatorPromptBuilder.buildSystemPrompt(targetLang, characterRegistry, customGlossary, mediaContext)
+        val sampleText = cues.firstOrNull()?.rawText ?: ""
+        val systemInstruction = AITranslatorPromptBuilder.buildSystemPrompt(
+            targetLang = targetLang,
+            characterRegistry = characterRegistry,
+            customGlossary = customGlossary,
+            mediaContext = mediaContext,
+            sourceLang = sourceLang,
+            sampleText = sampleText
+        )
         val userContentJson = AITranslatorPromptBuilder.buildUserPayload(cues, lookbehind, lookahead)
 
         val responseSchema = if (includeDiscoveredCharacters) {

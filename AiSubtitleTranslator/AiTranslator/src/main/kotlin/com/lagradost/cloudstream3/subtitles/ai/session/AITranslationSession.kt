@@ -12,6 +12,7 @@ import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.subtitles.ai.cache.SubtitleCacheManager
 import com.lagradost.cloudstream3.subtitles.ai.client.AITranslationClient
 import com.lagradost.cloudstream3.subtitles.ai.client.AITranslatorFactory
+import com.lagradost.cloudstream3.subtitles.ai.client.AITranslatorPromptBuilder
 import com.lagradost.cloudstream3.subtitles.ai.client.PacingGovernor
 import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -645,11 +646,19 @@ class AITranslationSession(
                 // Pacing governor (15 RPM protection)
                 pacingGovernor.pace()
 
+                val effectiveSourceLang = if (!candidate.lang.isNullOrBlank() && !candidate.lang.equals("auto", ignoreCase = true)) {
+                    candidate.lang
+                } else if (chunkCues.any { AITranslatorPromptBuilder.isJapaneseScript(it.rawText) }) {
+                    "ja"
+                } else {
+                    candidate.lang
+                }
+
                 val translatedChunk = translateChunkWithRetry(
                     client = client,
                     chunkIndex = index,
                     chunkCues = chunkCues,
-                    sourceLang = candidate.lang,
+                    sourceLang = effectiveSourceLang,
                     targetLang = targetLang,
                     glossary = TranslatorConfig.customGlossary,
                     lookbehind = lookbehind,

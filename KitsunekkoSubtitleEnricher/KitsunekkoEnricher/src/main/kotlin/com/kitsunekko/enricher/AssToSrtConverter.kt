@@ -36,7 +36,7 @@ object AssToSrtConverter {
     }
 
     private val SUBRIP_TIMING_REGEX = Regex(
-        """(?m)^\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})"""
+        """(?m)^[\s\u3000]*(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})[\s\u3000]*(?:-->|->|~|ー>|ー＞|→)[\s\u3000]*(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})"""
     )
     private val ASS_OVERRIDE_TAGS_REGEX = Regex("""\{[^}]*\}""")
     private val ASS_DRAWING_REGEX = Regex("""\{\\p[1-9]\}.*?(\{\\p0\}|$)""", RegexOption.DOT_MATCHES_ALL)
@@ -182,8 +182,10 @@ object AssToSrtConverter {
                     val rawText = parts[textIdx]
 
                     val startMs = assTimeToMs(rawStart) ?: continue
-                    val endMs = assTimeToMs(rawEnd) ?: continue
-                    if (endMs < startMs) continue
+                    var endMs = assTimeToMs(rawEnd) ?: continue
+                    if (endMs <= startMs) {
+                        endMs = startMs + 1500L
+                    }
 
                     val cleanedText = stripAssTags(rawText)
                     if (cleanedText.isNotBlank()) {

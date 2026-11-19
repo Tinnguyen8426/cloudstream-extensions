@@ -84,7 +84,15 @@ class AnthropicTranslatorClient(
 
         val endpointUrl = buildAnthropicUrl(baseUrl)
         val isBootstrap = AITranslatorPromptBuilder.isBootstrap(lookbehind, characterRegistry)
-        val systemPrompt = AITranslatorPromptBuilder.buildSystemPrompt(targetLang, characterRegistry, customGlossary, mediaContext)
+        val sampleText = cues.firstOrNull()?.rawText ?: ""
+        val systemPrompt = AITranslatorPromptBuilder.buildSystemPrompt(
+            targetLang = targetLang,
+            characterRegistry = characterRegistry,
+            customGlossary = customGlossary,
+            mediaContext = mediaContext,
+            sourceLang = sourceLang,
+            sampleText = sampleText
+        )
         val userContentJson = AITranslatorPromptBuilder.buildUserPayload(cues, lookbehind, lookahead)
 
         // Anthropic Messages API payload with Assistant Prefill

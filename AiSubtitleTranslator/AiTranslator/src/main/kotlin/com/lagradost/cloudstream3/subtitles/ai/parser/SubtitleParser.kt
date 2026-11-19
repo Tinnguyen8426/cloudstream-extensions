@@ -15,8 +15,10 @@ class SubtitleParser {
         val BOM_PATTERN = Regex("""^(\uFEFF|\uFFFE)""")
 
         val TIMING_LINE_REGEX = Regex(
-            """(?m)^\s*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,4})\s*-->\s*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,4})([^\r\n]*)"""
+            """(?m)^[\s\u3000]*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,4})[\s\u3000]*(?:-->|->|ー>|ー＞|→|~)[\s\u3000]*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,4})([^\r\n]*)"""
         )
+
+        val ASS_DRAWING_REGEX = Regex("""\{[^}]*\\p[1-9]\d*[^}]*\}.*?(?:\{[^}]*\\p0[^}]*\}|$)""", RegexOption.DOT_MATCHES_ALL)
 
         // Shield style and formatting tags, preserving <v> voice tags for speaker parsing
         val TAG_SHIELD_REGEX = Regex(
@@ -81,7 +83,10 @@ class SubtitleParser {
                 val g = match.groupValues
 
                 val startMs = parseTimestampToMs(g[1].ifEmpty { null }, g[2], g[3], g[4])
-                val endMs = parseTimestampToMs(g[5].ifEmpty { null }, g[6], g[7], g[8])
+                var endMs = parseTimestampToMs(g[5].ifEmpty { null }, g[6], g[7], g[8])
+                if (endMs <= startMs) {
+                    endMs = startMs + 1500L
+                }
                 val settings = g[9].trim().ifEmpty { null }
 
                 val textStart = match.range.last + 1
@@ -232,8 +237,12 @@ class SubtitleParser {
                         val parts = content.split(",", limit = limit)
                         if (parts.size > textIndex) {
                             val startMs = parseAssTimestampToMs(parts.getOrElse(startIndex) { "" })
-                            val endMs = parseAssTimestampToMs(parts.getOrElse(endIndex) { "" })
-                            val rawDialogue = parts[textIndex]
+                            var endMs = parseAssTimestampToMs(parts.getOrElse(endIndex) { "" })
+                            if (endMs <= startMs) {
+                                endMs = startMs + 1500L
+                            }
+                            val strippedDialogue = ASS_DRAWING_REGEX.replace(parts[textIndex], "")
+                            val rawDialogue = strippedDialogue
                                 .replace("\\N", "\n")
                                 .replace("\\n", "\n")
                                 .replace("\\h", " ")
