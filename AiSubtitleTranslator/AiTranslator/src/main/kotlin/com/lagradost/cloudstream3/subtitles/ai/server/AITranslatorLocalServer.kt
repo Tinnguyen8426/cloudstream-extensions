@@ -3,6 +3,7 @@ package com.lagradost.cloudstream3.subtitles.ai.server
 import android.content.Context
 import com.lagradost.cloudstream3.subtitles.ai.cache.SubtitleCacheManager
 import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
+import com.lagradost.cloudstream3.subtitles.ai.session.AITranslationSession
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -49,6 +50,7 @@ object AITranslatorLocalServer {
     private var clientExecutor: ExecutorService? = null
 
     private val registeredFiles = ConcurrentHashMap<String, File>()
+    private val activeSessions = ConcurrentHashMap<String, AITranslationSession>()
 
     /**
      * Optional custom base directory override for standalone JVM testing or custom storage locations.
@@ -138,7 +140,23 @@ object AITranslatorLocalServer {
         clientExecutor = null
 
         registeredFiles.clear()
+        activeSessions.clear()
         logI(TAG, "AITranslatorLocalServer stopped")
+    }
+
+    fun registerSession(key: String, session: AITranslationSession) {
+        val cleanKey = if (key.endsWith(".srt")) key.removeSuffix(".srt") else key
+        activeSessions[cleanKey] = session
+    }
+
+    fun unregisterSession(key: String) {
+        val cleanKey = if (key.endsWith(".srt")) key.removeSuffix(".srt") else key
+        activeSessions.remove(cleanKey)
+    }
+
+    fun registerSessionKeyFile(sessionKey: String, file: File) {
+        val fileName = if (sessionKey.endsWith(".srt")) sessionKey else "$sessionKey.srt"
+        registeredFiles[fileName] = file
     }
 
     /**
@@ -248,9 +266,22 @@ object AITranslatorLocalServer {
             }
 
             // 5. Locate file to serve: registered map first, then targetFile in fullDir
-            val fileToServe = registeredFiles[fileName]
+            var fileToServe = registeredFiles[fileName]
                 ?: registeredFiles[rawFileName]
                 ?: targetFile
+
+            if (!fileToServe.exists() || !fileToServe.isFile) {
+                val sessionKey = fileName.removeSuffix(".srt")
+                val session = activeSessions[sessionKey] ?: activeSessions[fileName] ?: activeSessions[rawFileName]
+                if (session != null && !session.isCompleted && !session.isCancelled) {
+                    logI(TAG, "Active translation session in flight for $fileName. Awaiting completion (timeout: 60s)...")
+                    session.awaitCompletion(60000L)
+                }
+                fileToServe = registeredFiles[fileName]
+                    ?: registeredFiles[rawFileName]
+                    ?: session?.completedFile
+                    ?: targetFile
+            }
 
             if (!fileToServe.exists() || !fileToServe.isFile) {
                 sendErrorResponse(outputStream, 404, "File Not Found")

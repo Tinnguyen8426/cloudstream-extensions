@@ -156,7 +156,7 @@ fun main() = runBlocking {
     // TEST 3: Dialogue Context Window & Temporal Continuity Guard
     // -------------------------------------------------------------------------
     println("\n--- [Test 3: Dialogue Context Window & Temporal Guard] ---")
-    val contextWindow = DialogueContextWindow(lookbehindSize = 3, lookaheadSize = 2, maxLookbehindGapMs = 30000L)
+    val contextWindow = DialogueContextWindow(lookbehindSize = 3, lookaheadSize = 2, maxLookbehindGapMs = 15000L)
 
     val cue1 = SubtitleCue(index = 1, startMs = 1000L, endMs = 4000L, rawText = "Hello", maskedText = "Hello", speaker = "A")
     val cue2 = SubtitleCue(index = 2, startMs = 5000L, endMs = 8000L, rawText = "Hi there", maskedText = "Hi there", speaker = "B")
@@ -164,17 +164,17 @@ fun main() = runBlocking {
 
     contextWindow.recordFinalizedCues(listOf(cue1, cue2, cue3), mapOf(1 to "Xin chào", 2 to "Chào bạn", 3 to "Bạn khỏe không?"))
 
-    // Lookbehind retrieval under normal continuous playback (gap < 30s, index gap == 1)
+    // Lookbehind retrieval under normal continuous playback (gap < 15s, index gap == 1)
     val targetCuesContinuous = listOf(SubtitleCue(index = 4, startMs = 13000L, endMs = 16000L, rawText = "I am fine", maskedText = "I am fine", speaker = "B"))
     val lookbehind = contextWindow.getLookbehind(targetCuesContinuous)
     assertEquals("Lookbehind count matches lookbehindSize", 3, lookbehind.size)
     assertEquals("Lookbehind most recent item is Cue 3", 3, lookbehind.last().index)
     assertEquals("Lookbehind translated text preserved", "Bạn khỏe không?", lookbehind.last().translatedText)
 
-    // Temporal Continuity Guard Trigger: Seek Jump > 30s
+    // Temporal Continuity Guard Trigger: Seek Jump > 15s
     val targetCuesSeekTime = listOf(SubtitleCue(index = 5, startMs = 80000L, endMs = 84000L, rawText = "Much later...", maskedText = "Much later..."))
     val lookbehindSeekTime = contextWindow.getLookbehind(targetCuesSeekTime)
-    assertEquals("Temporal guard flushes history on time jump > 30s", 0, lookbehindSeekTime.size)
+    assertEquals("Temporal guard flushes history on time jump > 15s", 0, lookbehindSeekTime.size)
 
     // Re-populate and test index jump guard (> 5 cues ahead)
     contextWindow.recordFinalizedCues(listOf(cue1), mapOf(1 to "Xin chào"))
@@ -349,6 +349,11 @@ fun main() = runBlocking {
     assertTrue("Vietnamese prompt includes Internal Monologue rules", promptVi.contains("Độc thoại nội tâm"))
     assertTrue("Vietnamese prompt includes relaxed tôi - bạn rules", promptVi.contains("Quy tắc 'tôi - bạn'"))
     assertTrue("Prompt disambiguation override has NO character roster reference", !promptVi.contains("or character roster"))
+    assertTrue("Vietnamese prompt includes 3-Tier Hierarchy of Truth", promptVi.contains("3-TIER HIERARCHY OF TRUTH") && promptVi.contains("Tier 1"))
+    assertTrue("Vietnamese prompt includes Pragmatic Dialogue vs Monologue matrix", promptVi.contains("Ma trận Nhận diện Hành vi Ngôn ngữ"))
+    assertTrue("Vietnamese prompt includes Observational Thoughts directive", promptVi.contains("Suy nghĩ quan sát về người khác"))
+    assertTrue("Vietnamese prompt includes Universal Hierarchy Lock", promptVi.contains("Khóa thứ bậc hai chiều"))
+    assertTrue("Prompt output schema requires act and role before text", promptVi.contains("'act'") && promptVi.contains("'role'"))
 
     val schoolContext = MediaContext(title = "Horimiya", tags = listOf("Romance", "School", "Comedy"))
     val schoolPrompt = AITranslatorPromptBuilder.buildSystemPrompt("vi", registry, null, schoolContext)
@@ -419,6 +424,27 @@ fun main() = runBlocking {
     assertEquals("Relationship target", "Elena Rostova", discoveredRels[0].addressMatrix["target"])
     assertEquals("Relationship address", "anh - em", discoveredRels[0].addressMatrix["address"])
     assertEquals("Relationship pair", listOf("Arthur Vance", "Elena Rostova"), discoveredRels[0].pair)
+
+    // Subtest 9.2: SubtitleItem Deserialization & Parser with act and role
+    val actRoleJson = """
+        {
+          "translations": [
+            {"id": 1, "act": "dialogue", "role": "junior", "text": "Dạ em chào sếp ạ."},
+            {"id": 2, "act": "monologue", "role": "solo", "text": "Mình phải cố gắng hoàn thành việc này."}
+          ]
+        }
+    """.trimIndent()
+    val parsedActRole = AITranslationParser.parseTranslations(actRoleJson)
+    assertEquals("Parsed translations with act/role count", 2, parsedActRole.size)
+    assertEquals("Cue 1 with act/role", "Dạ em chào sếp ạ.", parsedActRole[1])
+    assertEquals("Cue 2 with act/role", "Mình phải cố gắng hoàn thành việc này.", parsedActRole[2])
+
+    val itemTestJson = """{"id": 1, "act": "dialogue", "role": "senior", "text": "Chào em."}"""
+    val subItem = mapper.readValue(itemTestJson, SubtitleItem::class.java)
+    assertEquals("SubtitleItem id parsed", 1, subItem.id)
+    assertEquals("SubtitleItem act parsed", "dialogue", subItem.act)
+    assertEquals("SubtitleItem role parsed", "senior", subItem.role)
+    assertEquals("SubtitleItem text parsed", "Chào em.", subItem.text)
 
     // -------------------------------------------------------------------------
     // TEST 10: Configuration Keys Persistence & Defaults

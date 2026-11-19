@@ -70,28 +70,28 @@ fun main() {
     assertTrue("Enriched prompt still retains DISAMBIGUATION OVERRIDE", enrichedPrompt.contains("DISAMBIGUATION OVERRIDE"))
 
     // -------------------------------------------------------------------------
-    // TEST 3: DialogueContextWindow 30000ms Scene-Cut Eviction
+    // TEST 3: DialogueContextWindow 15000ms Scene-Cut Eviction
     // -------------------------------------------------------------------------
-    println("\n--- [Test 3: DialogueContextWindow 30000ms Scene-Cut Eviction] ---")
+    println("\n--- [Test 3: DialogueContextWindow 15000ms Scene-Cut Eviction] ---")
     val defaultWindow = DialogueContextWindow()
-    assertEquals("Default maxLookbehindGapMs is 30000L", 30000L, defaultWindow.maxLookbehindGapMs)
+    assertEquals("Default maxLookbehindGapMs is 15000L", 15000L, defaultWindow.maxLookbehindGapMs)
 
     val cue1 = SubtitleCue(index = 1, startMs = 1000L, endMs = 3000L, rawText = "Line 1")
     defaultWindow.recordFinalizedCues(listOf(cue1), mapOf(1 to "Dòng 1"))
 
-    // Within-scene target: starts at 7000L (gap = 4000L <= 30000L)
+    // Within-scene target: starts at 7000L (gap = 4000L <= 15000L)
     val withinSceneTarget = listOf(SubtitleCue(index = 2, startMs = 7000L, endMs = 9000L, rawText = "Line 2"))
     val lbWithin = defaultWindow.getLookbehind(withinSceneTarget)
-    assertEquals("Lookbehind preserved for gaps <= 30000ms", 1, lbWithin.size)
+    assertEquals("Lookbehind preserved for gaps <= 15000ms", 1, lbWithin.size)
     assertEquals("Lookbehind item index matches cue 1", 1, lbWithin.first().index)
 
     // Record cue 2
     defaultWindow.recordFinalizedCues(withinSceneTarget, mapOf(2 to "Dòng 2"))
 
-    // Scene-cut target: starts at 40000L (gap = 31000L > 30000L)
-    val sceneCutTarget = listOf(SubtitleCue(index = 3, startMs = 40000L, endMs = 42000L, rawText = "Line 3"))
+    // Scene-cut target: starts at 26000L (gap = 17000L > 15000L)
+    val sceneCutTarget = listOf(SubtitleCue(index = 3, startMs = 26000L, endMs = 28000L, rawText = "Line 3"))
     val lbSceneCut = defaultWindow.getLookbehind(sceneCutTarget)
-    assertEquals("Lookbehind flushed on scene cut gap > 30000ms", 0, lbSceneCut.size)
+    assertEquals("Lookbehind flushed on scene cut gap > 15000ms", 0, lbSceneCut.size)
     assertEquals("Session generation ID incremented after flush", 1L, defaultWindow.sessionGenerationId)
 
     println("\n================================================================================")

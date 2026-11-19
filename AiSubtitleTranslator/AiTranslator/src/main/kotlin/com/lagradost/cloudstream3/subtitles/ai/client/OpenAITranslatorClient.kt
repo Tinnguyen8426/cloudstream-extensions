@@ -101,11 +101,13 @@ class OpenAITranslatorClient(
                                 "type" to "array",
                                 "items" to mapOf(
                                     "type" to "object",
-                                    "properties" to mapOf(
+                                    "properties" to linkedMapOf(
                                         "id" to mapOf("type" to "integer"),
+                                        "act" to mapOf("type" to "string", "enum" to listOf("dialogue", "monologue")),
+                                        "role" to mapOf("type" to "string", "enum" to listOf("senior", "junior", "peer", "solo")),
                                         "text" to mapOf("type" to "string")
                                     ),
-                                    "required" to listOf("id", "text"),
+                                    "required" to listOf("id", "act", "role", "text"),
                                     "additionalProperties" to false
                                 )
                             ),
@@ -141,11 +143,13 @@ class OpenAITranslatorClient(
                                 "type" to "array",
                                 "items" to mapOf(
                                     "type" to "object",
-                                    "properties" to mapOf(
+                                    "properties" to linkedMapOf(
                                         "id" to mapOf("type" to "integer"),
+                                        "act" to mapOf("type" to "string", "enum" to listOf("dialogue", "monologue")),
+                                        "role" to mapOf("type" to "string", "enum" to listOf("senior", "junior", "peer", "solo")),
                                         "text" to mapOf("type" to "string")
                                     ),
-                                    "required" to listOf("id", "text"),
+                                    "required" to listOf("id", "act", "role", "text"),
                                     "additionalProperties" to false
                                 )
                             )

@@ -14,7 +14,9 @@ import com.lagradost.cloudstream3.syncproviders.SyncIdName
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
 import com.lagradost.cloudstream3.subtitles.ai.models.MediaContext
+import com.lagradost.cloudstream3.subtitles.ai.server.AITranslatorLocalServer
 import com.lagradost.cloudstream3.subtitles.ai.session.AITranslationSession
+import com.lagradost.cloudstream3.subtitles.ai.session.SubtitlePriorityEvaluator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Interceptor
@@ -279,6 +281,7 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
         activeSession = session
 
         var candidateCount = 0
+        var preAnnounced = false
         val interceptingSubtitleCallback: (SubtitleFile) -> Unit = { subFile ->
             candidateCount++
             logI(TAG, "Intercepted subtitle from '${baseApi.name}': lang='${subFile.lang}', url='${subFile.url}'")
@@ -288,6 +291,30 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
                 subtitleCallback(subFile)
             } catch (t: Throwable) {
                 logW(TAG, "Player subtitle callback threw: ${t.message}")
+            }
+
+            // PRE-ANNOUNCEMENT: Pre-announce [AI] Tiếng Việt on first candidate subtitle
+            if (!preAnnounced && !session.isTargetLanguageBypassed && !session.isCancelled) {
+                val score = SubtitlePriorityEvaluator.calculateScore(
+                    subFile = subFile,
+                    targetLang = session.targetLang,
+                    priorityMode = TranslatorConfig.sourcePriorityMode,
+                    customList = TranslatorConfig.getCustomPriorityLanguages()
+                )
+                if (score != SubtitlePriorityEvaluator.SCORE_BYPASS_TARGET_LANG) {
+                    preAnnounced = true
+                    try {
+                        val streamKey = session.sessionKey
+                        val streamUrl = AITranslatorLocalServer.getSubtitleUrl(streamKey)
+                        AITranslatorLocalServer.registerSession(streamKey, session)
+                        val targetDisplayName = AITranslationSession.getTargetLanguageDisplayName(session.targetLang)
+                        val preAnnounceLabel = "[AI] $targetDisplayName"
+                        logI(TAG, "Pre-announcing AI subtitle track: '$preAnnounceLabel' -> $streamUrl")
+                        subtitleCallback(SubtitleFile(lang = preAnnounceLabel, url = streamUrl))
+                    } catch (t: Throwable) {
+                        logW(TAG, "Pre-announcement failed: ${t.message}")
+                    }
+                }
             }
 
             // PATH 2: ASYNCHRONOUS CANDIDATE DISCOVERY & QUEUEING

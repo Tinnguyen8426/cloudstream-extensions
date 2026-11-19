@@ -98,11 +98,13 @@ class GeminiTranslatorClient(
                         "type" to "ARRAY",
                         "items" to mapOf(
                             "type" to "OBJECT",
-                            "properties" to mapOf(
+                            "properties" to linkedMapOf(
                                 "id" to mapOf("type" to "INTEGER"),
+                                "act" to mapOf("type" to "STRING", "enum" to listOf("dialogue", "monologue")),
+                                "role" to mapOf("type" to "STRING", "enum" to listOf("senior", "junior", "peer", "solo")),
                                 "text" to mapOf("type" to "STRING")
                             ),
-                            "required" to listOf("id", "text")
+                            "required" to listOf("id", "act", "role", "text")
                         )
                     ),
                     "discovered_characters" to mapOf(
@@ -128,11 +130,13 @@ class GeminiTranslatorClient(
                         "type" to "ARRAY",
                         "items" to mapOf(
                             "type" to "OBJECT",
-                            "properties" to mapOf(
+                            "properties" to linkedMapOf(
                                 "id" to mapOf("type" to "INTEGER"),
+                                "act" to mapOf("type" to "STRING", "enum" to listOf("dialogue", "monologue")),
+                                "role" to mapOf("type" to "STRING", "enum" to listOf("senior", "junior", "peer", "solo")),
                                 "text" to mapOf("type" to "STRING")
                             ),
-                            "required" to listOf("id", "text")
+                            "required" to listOf("id", "act", "role", "text")
                         )
                     )
                 ),

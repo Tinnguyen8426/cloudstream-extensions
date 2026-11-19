@@ -26,7 +26,14 @@ object AITranslatorPromptBuilder {
             "vi" -> """
                 - Xưng hô nhân vật: Áp dụng danh từ thân tộc chuẩn xác theo giới tính, tuổi tác và vai vế thực tế trong bảng CHARACTER ROSTER (anh/em, chị/em, chú/cháu, bác/cháu, cô/cháu, ông/cháu, bố/con).
                 - Bạn bè học đường / cùng trang lứa: Ưu tiên xưng hô 'tớ - cậu', 'mình - bạn', gọi tên trực tiếp, hoặc 'mày - tao' khi thân mật suồng sã. Tuyệt đối KHÔNG áp đặt 'anh - em' lên bạn học cùng trang lứa.
-                - Độc thoại nội tâm (Internal Monologue): Khi nhân vật tự suy nghĩ một mình (không có người nghe trực tiếp), dùng 'mình', 'ta', 'tôi' hoặc lược bỏ đại từ nhân xưng. Tuyệt đối KHÔNG tự xưng 'anh / em' khi độc thoại một mình.
+                - Ma trận Nhận diện Hành vi Ngôn ngữ (Dialogue vs Monologue):
+                  * Phân biệt Spoken Dialogue vs Internal Monologue thuần túy bằng Hướng phát ngôn (Direction of Address).
+                  * Lời thoại đối đáp (Spoken Dialogue): Hướng tới người nghe có mặt trong cảnh (chứa 'you', đại từ ngôi 2, từ hô ngữ, câu hỏi/chào hỏi trực tiếp, mệnh lệnh/yêu cầu).
+                  * Độc thoại nội tâm (Internal Monologue): Suy nghĩ thầm kín trong đầu, không có người nghe trực tiếp (chứa động từ nhận thức 'I think/wonder/feel', câu tự vấn/rhetorical questions).
+                - Quy tắc xưng hô Độc thoại nội tâm: Khi nhân vật tự suy nghĩ một mình (không có người nghe trực tiếp), dùng 'mình', 'ta', 'tôi' hoặc lược bỏ đại từ nhân xưng. Tuyệt đối KHÔNG tự xưng 'anh / em' khi độc thoại một mình.
+                - Suy nghĩ quan sát về người khác (Observational Thoughts): Khi độc thoại nội tâm là suy nghĩ quan sát, nhận định về người khác ("She is late", "What is he doing?"), BẮT BUỘC giữ nguyên ngôi thứ 3 ('cô ấy', 'anh ấy', 'cậu ấy', 'họ'...), tuyệt đối KHÔNG chuyển thành ngôi thứ 2 xưng hô đối thoại ('em', 'anh', 'cậu').
+                - Khóa thứ bậc hai chiều (Universal Hierarchy Lock): Trong hai lượt thoại đối đáp kế cận giữa 2 nhân vật, cặp vai vế xưng hô (senior <-> junior, ví dụ anh/em hoặc chú/cháu) phải giữ nguyên bất biến, không đảo lộn vai xưng hô giữa câu hỏi và câu đáp.
+                - Phân định theo từng lượt thoại (Per-Cue Decision): Vai trò 'act' và 'role' được đánh giá linh hoạt theo từng lượt thoại (per-cue), không khóa cứng vai trò của nhân vật cho toàn bộ bộ phim.
                 - Thứ bậc dòng tộc thắng tuổi tác sinh học: Trong quan hệ gia tộc, vai vế huyết thống ghi đè tuổi sinh học ("chú ít tuổi hơn cháu" vẫn phải dịch xưng hô "chú - cháu", tuyệt đối không dùng "anh - em").
                 - Xung đột công sở vs Tuổi tác: Khi sếp nam trẻ tuổi nói chuyện với nhân viên nữ lớn tuổi hơn, sếp tự xưng "tôi/em" và gọi nhân viên là "chị" (cấm trịch thượng dùng "anh - em" và cấm lố bịch dùng "chú - cháu").
                 - Bất biến Nghịch đảo Xưng hô (Dyadic Reciprocity): Nếu nhân vật A xưng 'anh' gọi 'em', nhân vật B bắt buộc phải xưng 'em' gọi 'anh'. Tuyệt đối không để nhân vật tự xưng 'tôi' khi đang đối thoại thân mật với người thân/người yêu.
@@ -169,6 +176,10 @@ object AITranslatorPromptBuilder {
             $fullDirectives
 
             ### 3. CONTEXTUAL AWARENESS & SLIDING WINDOW RULES:
+            - 3-TIER HIERARCHY OF TRUTH & ANTI-CASCADING OVERRIDE:
+              * Tier 1 (Supreme Truth - Vocatives & Lookahead): Explicit vocatives (e.g. 'Dad', 'Father', 'Sensei', 'Boss', 'Doctor', 'Sir', 'Bro', 'Kid', 'Lady', 'young miss') or kinship revelations in the current cue or [LOOKAHEAD_CONTEXT] OVERRIDE 100% of previous context. You MUST immediately correct pronouns and self-correct from that cue forward. NEVER persist mistaken prior assumptions across dialogue turns.
+              * Tier 2 (Situational & Genre Context): Genre conventions (School, Workplace, Historical/Period, Martial Arts) guide default social registers and honorific norms.
+              * Tier 3 (Provisional Lookbehind): [LOOKBEHIND_CONTEXT] is a soft, provisional hypothesis for conversational continuity. It applies ONLY in the absence of higher-tier conflicting evidence.
             - CONTEXTUAL CONTINUITY & SELF-CORRECTION: Use [LOOKBEHIND_CONTEXT] to maintain conversational flow and tone. DISAMBIGUATION OVERRIDE: If lookbehind used a generic or assumed pronoun (e.g. 'anh/em' or 'tôi/bạn') but current or lookahead dialogue reveals explicit new evidence about a character's true identity, gender, title, or age hierarchy (e.g. vocatives like 'Lady', 'sir', 'young miss', 'father', 'sister'), you MUST OVERRIDE and CORRECT the pronoun immediately. DO NOT blindly persist prior mistaken pronouns. DO NOT translate or include them in output.
             - Cues under [LOOKAHEAD_CONTEXT] are upcoming source lines. Use them solely to anticipate replies, questions, or pronoun disambiguation. DO NOT translate or include them in output.
             - Translate ONLY the entries listed under [TARGET_CUES].
@@ -185,7 +196,7 @@ object AITranslatorPromptBuilder {
             - NEVER modify, reorder, translate, split, or omit any [[TAG_N]] token. They must remain in their exact relative positions around the translated text.
 
             ### 6. OUTPUT FORMAT:
-            Output MUST strictly be a valid JSON object adhering to the specified schema, containing a 'translations' array of objects with integer 'id' and string 'text'.$glossaryPrompt
+            Output MUST strictly be a valid JSON object adhering to the specified schema, containing a 'translations' array of objects with integer 'id', string 'act' ("dialogue" | "monologue"), string 'role' ("senior" | "junior" | "peer" | "solo"), and string 'text'.$glossaryPrompt
         """.trimIndent()
     }
 

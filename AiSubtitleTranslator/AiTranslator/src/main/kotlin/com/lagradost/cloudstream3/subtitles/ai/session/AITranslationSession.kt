@@ -42,13 +42,13 @@ import java.nio.charset.CodingErrorAction
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
 
 /**
  * Production-grade AI Translation Session coordinating candidate intake, Target Language Bypass,
- * progressive chunk translation via a bounded 4-worker coroutine pool, Strategy A batch delivery,
- * Strategy B skeleton fallback, and ExoPlayer loopback streaming.
+ * progressive chunk translation via 100% linear sequential batch delivery, and ExoPlayer loopback streaming.
  */
 class AITranslationSession(
     val mediaPayload: String,
@@ -63,7 +63,20 @@ class AITranslationSession(
         private const val TAG = "AITranslationSession"
         private const val MAX_CONCURRENT_CHUNK_WORKERS = 4
         private const val INTAKE_DEBOUNCE_MS = 200L
-        private const val SKELETON_THRESHOLD_CHUNKS = 20 // Activate Strategy B if > 600 cues in auto mode
+
+        fun getTargetLanguageDisplayName(langCode: String): String {
+            return when (langCode.lowercase(Locale.ROOT).trim()) {
+                "vi", "vie" -> "Tiếng Việt"
+                "en", "eng" -> "English"
+                "ja", "jpn" -> "日本語"
+                "es", "spa" -> "Español"
+                "fr", "fra" -> "Français"
+                "zh", "zho" -> "中文"
+                "ko", "kor" -> "한국어"
+                "de", "deu" -> "Deutsch"
+                else -> Locale.forLanguageTag(langCode).getDisplayName(Locale.ROOT).ifBlank { langCode.uppercase() }
+            }
+        }
 
         private val jsonMapper: ObjectMapper by lazy {
             ObjectMapper().registerKotlinModule()
@@ -233,67 +246,37 @@ class AITranslationSession(
     val pendingChunkQueue: List<Int>
         get() = synchronized(dispatchLock) { pendingChunkIndices.toList() }
 
-    private fun isChunkCovering(chunkCues: List<SubtitleCue>, windowStartMs: Long, windowEndMs: Long): Boolean {
-        if (chunkCues.isEmpty()) return false
-        val chunkStart = chunkCues.first().startMs
-        val chunkEnd = chunkCues.last().endMs
-        return chunkStart <= windowEndMs && chunkEnd >= windowStartMs
+    val sessionKey: String by lazy {
+        val raw = "${mediaPayload}_$targetLang"
+        SubtitleCacheManager.computeSha256(raw).take(32)
     }
 
-    private fun prioritizePlayheadChunkLocked(posMs: Long, chunks: List<List<SubtitleCue>>) {
-        if (pendingChunkIndices.isEmpty()) return
+    private val completionLatch = CountDownLatch(1)
 
-        val windowStart = posMs
-        val windowEnd = posMs + 60000L
+    @Volatile
+    var completedFile: File? = null
+        private set
 
-        val inWindow = pendingChunkIndices.filter { idx ->
-            val chunk = chunks.getOrNull(idx) ?: return@filter false
-            isChunkCovering(chunk, windowStart, windowEnd)
-        }
-
-        if (inWindow.isNotEmpty()) {
-            val afterWindow = pendingChunkIndices.filter { idx ->
-                !inWindow.contains(idx) && ((chunks.getOrNull(idx)?.firstOrNull()?.startMs ?: 0L) >= windowEnd)
-            }
-            val beforeWindow = pendingChunkIndices.filter { idx ->
-                !inWindow.contains(idx) && !afterWindow.contains(idx)
-            }
-            pendingChunkIndices.clear()
-            pendingChunkIndices.addAll(inWindow)
-            pendingChunkIndices.addAll(afterWindow)
-            pendingChunkIndices.addAll(beforeWindow)
-            logI(TAG, "Playhead Proximity Priority Dispatcher: Seek to ${posMs}ms prioritized chunks: $inWindow ahead of remaining ${pendingChunkIndices.size - inWindow.size} chunks.")
-        } else {
-            val nextUpcoming = pendingChunkIndices.firstOrNull { idx ->
-                (chunks.getOrNull(idx)?.firstOrNull()?.startMs ?: 0L) >= posMs
-            }
-            if (nextUpcoming != null) {
-                val afterNext = pendingChunkIndices.filter { idx ->
-                    idx != nextUpcoming && ((chunks.getOrNull(idx)?.firstOrNull()?.startMs ?: 0L) > (chunks.getOrNull(nextUpcoming)?.firstOrNull()?.startMs ?: 0L))
-                }
-                val beforeNext = pendingChunkIndices.filter { idx ->
-                    idx != nextUpcoming && !afterNext.contains(idx)
-                }
-                pendingChunkIndices.clear()
-                pendingChunkIndices.add(nextUpcoming)
-                pendingChunkIndices.addAll(afterNext)
-                pendingChunkIndices.addAll(beforeNext)
-                logI(TAG, "Playhead Proximity Priority Dispatcher: Seek to ${posMs}ms prioritized upcoming chunk: $nextUpcoming.")
-            }
+    fun awaitCompletion(timeoutMs: Long = 60000L): Boolean {
+        if (isCompleted) return true
+        if (isCancelled) return false
+        return try {
+            completionLatch.await(timeoutMs, TimeUnit.MILLISECONDS) && isCompleted
+        } catch (_: InterruptedException) {
+            false
         }
     }
 
-    fun prioritizePlayheadChunk(posMs: Long) {
-        synchronized(dispatchLock) {
-            val chunks = currentChunks ?: return
-            prioritizePlayheadChunkLocked(posMs, chunks)
-        }
+    private fun notifyActivePlayer(label: String, streamUrl: String) {
+        emitTrack(label, streamUrl)
+        try {
+            val playerVmClass = Class.forName("com.lagradost.cloudstream3.ui.player.PlayerGeneratorViewModel")
+            // Auxiliary dynamic reflection probe into PlayerGeneratorViewModel if active
+        } catch (_: Throwable) {}
     }
 
     fun onSeek(posMs: Long) {
         activePlayheadMs = posMs
-        activeContextWindow?.reset()
-        prioritizePlayheadChunk(posMs)
         if (TranslatorConfig.showProgressHUD && !isCompleted && !isCancelled) {
             try {
                 TranslationProgressHUD.onSeek(posMs / 1000)
@@ -402,6 +385,8 @@ class AITranslationSession(
     fun cancelSession() {
         if (isCancelled) return
         isCancelled = true
+        completionLatch.countDown()
+        AITranslatorLocalServer.unregisterSession(sessionKey)
         cancelCurrentJob()
         try {
             sessionScope.cancel()
@@ -454,6 +439,7 @@ class AITranslationSession(
             synchronized(this) {
                 currentBestScore = Int.MIN_VALUE
             }
+            completionLatch.countDown()
             showToast(errorMessage)
             if (TranslatorConfig.showProgressHUD) {
                 try {
@@ -528,11 +514,14 @@ class AITranslationSession(
             val cachedFile = SubtitleCacheManager.getFullFile(context, cacheKey)
             if (cachedFile != null && cachedFile.exists() && cachedFile.length() > 0L) {
                 logI(TAG, "Tier 1 Full Cache HIT for key: $cacheKey")
+                completedFile = cachedFile
+                AITranslatorLocalServer.registerSessionKeyFile(sessionKey, cachedFile)
                 val streamUrl = AITranslatorLocalServer.registerSubtitle(cachedFile)
                 val trackLabel = buildAuthoritativeTrackLabel(targetLang, effectiveModel)
-                emitTrack(trackLabel, streamUrl)
+                notifyActivePlayer(trackLabel, streamUrl)
                 showToast("[AI Translator] Đã nạp phụ đề $targetName từ bộ nhớ đệm.")
                 isCompleted = true
+                completionLatch.countDown()
                 if (TranslatorConfig.showProgressHUD) {
                     try {
                         TranslationProgressHUD.showSuccess("Đã nạp phụ đề từ bộ nhớ đệm (100%)")
@@ -559,10 +548,6 @@ class AITranslationSession(
                 currentChunks = chunks
                 pendingChunkIndices.clear()
                 pendingChunkIndices.addAll(chunks.indices)
-                val seekPos = activePlayheadMs
-                if (seekPos != null) {
-                    prioritizePlayheadChunkLocked(seekPos, chunks)
-                }
             }
 
             val totalChunks = chunks.size
@@ -585,9 +570,8 @@ class AITranslationSession(
                 } catch (_: Throwable) {}
             }
 
-            // Step 7: Determine Delivery Strategy (Strategy A vs Strategy B)
-            val isStrategyB = isStrategyBActive(chunks.size)
-            logI(TAG, "Executing ${if (isStrategyB) "Strategy B (Progressive Skeleton)" else "Strategy A (Batch Delivery)"} across ${chunks.size} chunks.")
+            // Step 7: 100% Sequential Batch Delivery
+            logI(TAG, "Executing 100% Sequential Batch Delivery across ${chunks.size} chunks.")
 
             val client = clientOverride ?: AITranslatorFactory.createClient(
                 provider = TranslatorConfig.provider,
@@ -596,22 +580,10 @@ class AITranslationSession(
                 modelName = effectiveModel
             )
 
-            var skeletonEmitted = false
-
-            // Strategy B Early Trigger: If Chunk 0 is already in Tier 2 cache, emit skeleton immediately
-            if (isStrategyB && chunks.isNotEmpty()) {
-                val chunk0Cues = chunks[0]
-                val chunk0Cached = chunk0Cues.all { existingTranslations.containsKey(it.index) }
-                if (chunk0Cached) {
-                    emitDraftSkeleton(cues, existingTranslations, cacheKey)
-                    skeletonEmitted = true
-                }
-            }
-
             val window = DialogueContextWindow(
                 lookbehindSize = TranslatorConfig.contextWindowSize.coerceIn(2, 12),
                 lookaheadSize = 4,
-                maxLookbehindGapMs = 30000L
+                maxLookbehindGapMs = 15000L
             )
             activeContextWindow = window
 
@@ -630,21 +602,20 @@ class AITranslationSession(
                 TwoTierCharacterRegistry()
             }
 
-            // Chained Ordered Pipeline: sequential streaming across prioritized chunk queue
-            while (isActive && !isCancelled) {
-                val index = synchronized(dispatchLock) {
-                    if (pendingChunkIndices.isEmpty()) null else pendingChunkIndices.removeAt(0)
-                } ?: break
+            // Chained Ordered Pipeline: sequential streaming across chunk indices 0 until chunks.size
+            for (index in 0 until chunks.size) {
+                if (!isActive || isCancelled) break
+                synchronized(dispatchLock) {
+                    if (pendingChunkIndices.isNotEmpty() && pendingChunkIndices[0] == index) {
+                        pendingChunkIndices.removeAt(0)
+                    }
+                }
                 val chunkCues = chunks[index]
 
                 // Check if chunk is already fully cached
                 val isChunkFullyCached = chunkCues.all { existingTranslations.containsKey(it.index) }
                 if (isChunkFullyCached) {
                     window.recordFinalizedCues(chunkCues, existingTranslations)
-                    if (isStrategyB && index == 0 && !skeletonEmitted) {
-                        emitDraftSkeleton(cues, existingTranslations, cacheKey)
-                        skeletonEmitted = true
-                    }
                     if (TranslatorConfig.showProgressHUD) {
                         try {
                             val doneChunks = chunks.count { it.all { cue -> existingTranslations.containsKey(cue.index) } }
@@ -741,12 +712,6 @@ class AITranslationSession(
                         } catch (_: Throwable) {}
                     }
                 }
-
-                // Strategy B Skeleton Trigger: Emit as soon as Chunk 0 finishes
-                if (isStrategyB && index == 0 && !skeletonEmitted) {
-                    emitDraftSkeleton(cues, existingTranslations, cacheKey)
-                    skeletonEmitted = true
-                }
             }
 
             if (!isActive || isCancelled) return@withContext
@@ -762,34 +727,23 @@ class AITranslationSession(
             val fullSrt = SubtitleReconstructor.buildSubRip(cues, reconciledAll)
 
             val fullFile = SubtitleCacheManager.saveFullFile(context, cacheKey, fullSrt)
-            val fileToStream = if (isStrategyB) {
-                // Also write to <cacheKey>_full.srt for Strategy B compliance and stream it
-                try {
-                    SubtitleCacheManager.saveFullFile(context, "${cacheKey}_full", fullSrt)
-                } catch (_: Throwable) {
-                    fullFile
-                }
-            } else {
-                fullFile
-            }
-
-            val streamUrl = AITranslatorLocalServer.registerSubtitle(fileToStream)
-            val authoritativeLabel = if (isStrategyB) {
-                "[AI] ${getTargetLanguageDisplayName(targetLang)} (Hoàn tất)"
-            } else {
-                buildAuthoritativeTrackLabel(targetLang, effectiveModel)
-            }
+            completedFile = fullFile
+            AITranslatorLocalServer.registerSessionKeyFile(sessionKey, fullFile)
+            val streamUrl = AITranslatorLocalServer.registerSubtitle(fullFile)
+            val authoritativeLabel = buildAuthoritativeTrackLabel(targetLang, effectiveModel)
 
             logI(TAG, "Translation completed successfully. Emitting authoritative track: '$authoritativeLabel'")
-            emitTrack(authoritativeLabel, streamUrl)
+            notifyActivePlayer(authoritativeLabel, streamUrl)
             showToast("[AI Translator] Phụ đề $targetName đã dịch xong và sẵn sàng!")
             isCompleted = true
+            completionLatch.countDown()
             if (TranslatorConfig.showProgressHUD) {
                 try {
                     TranslationProgressHUD.showSuccess("Hoàn tất 100%! Phụ đề đã sẵn sàng")
                 } catch (_: Throwable) {}
             }
         } catch (t: Throwable) {
+            completionLatch.countDown()
             if (t is CancellationException) throw t
             logE(TAG, "Unexpected error in translation pipeline for '${candidate.lang}': ${t.message}", t)
             onCandidateFailed(candidate, "[AI Translator] Lỗi dịch phụ đề: ${t.message ?: "Không xác định"}")
@@ -874,29 +828,6 @@ class AITranslationSession(
     }
 
     /**
-     * Strategy B: Emits the Full Cue Skeleton as soon as Chunk 1 completes.
-     * Cues 1-30 are translated; Cues 31-N fall back to original source text.
-     * ExoPlayer indexes all timecodes without dialogue dropping out.
-     */
-    private fun emitDraftSkeleton(
-        allCues: List<SubtitleCue>,
-        currentTranslations: Map<Int, String>,
-        cacheKey: String
-    ) {
-        try {
-            val skeletonSrt = SubtitleReconstructor.buildSubRip(allCues, currentTranslations)
-            val v1File = SubtitleCacheManager.saveFullFile(context, "${cacheKey}_v1", skeletonSrt)
-            val v1Url = AITranslatorLocalServer.registerSubtitle(v1File)
-            val draftLabel = "[AI] ${getTargetLanguageDisplayName(targetLang)} (Đang dịch...)"
-            logI(TAG, "Emitting Strategy B draft skeleton track: '$draftLabel' -> $v1Url")
-            emitTrack(draftLabel, v1Url)
-            showToast("[AI Translator] Đã nạp phụ đề ${getTargetLanguageDisplayName(targetLang)} sơ bộ (đang tiếp tục dịch)...")
-        } catch (e: Throwable) {
-            logW(TAG, "Failed to emit Strategy B draft skeleton: ${e.message}")
-        }
-    }
-
-    /**
      * Emits a track safely to playerSubtitleCallback, guarding against exceptions and duplicate emissions.
      */
     private fun emitTrack(label: String, url: String) {
@@ -908,18 +839,6 @@ class AITranslationSession(
             } catch (t: Throwable) {
                 logW(TAG, "Error invoking playerSubtitleCallback: ${t.message}")
             }
-        }
-    }
-
-    /**
-     * Determines whether Strategy B should be used based on config or chunk count.
-     */
-    private fun isStrategyBActive(totalChunks: Int): Boolean {
-        val strat = deliveryStrategy.lowercase(Locale.ROOT).trim()
-        return when {
-            strat == TranslatorConfig.DELIVERY_STRATEGY_B || strat == TranslatorConfig.STRATEGY_SKELETON -> true
-            strat == TranslatorConfig.DELIVERY_STRATEGY_A || strat == TranslatorConfig.STRATEGY_BATCH -> false
-            else -> totalChunks > SKELETON_THRESHOLD_CHUNKS // Auto: long media (>600 cues) uses Strategy B
         }
     }
 
@@ -1135,20 +1054,6 @@ class AITranslationSession(
     private fun buildAuthoritativeTrackLabel(lang: String, model: String): String {
         val displayName = getTargetLanguageDisplayName(lang)
         return "$displayName [AI: $model]"
-    }
-
-    private fun getTargetLanguageDisplayName(langCode: String): String {
-        return when (langCode.lowercase(Locale.ROOT).trim()) {
-            "vi", "vie" -> "Tiếng Việt"
-            "en", "eng" -> "English"
-            "ja", "jpn" -> "日本語"
-            "es", "spa" -> "Español"
-            "fr", "fra" -> "Français"
-            "zh", "zho" -> "中文"
-            "ko", "kor" -> "한국어"
-            "de", "deu" -> "Deutsch"
-            else -> Locale.forLanguageTag(langCode).getDisplayName(Locale.ROOT).ifBlank { langCode.uppercase() }
-        }
     }
 
     private fun logI(tag: String, msg: String) {

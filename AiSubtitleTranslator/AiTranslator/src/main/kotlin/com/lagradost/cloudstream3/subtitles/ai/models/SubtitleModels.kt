@@ -26,8 +26,11 @@ data class SubtitleCue(
  * Represents a lightweight dialogue item for translation payload serialization
  * and polymorphic JSON deserialization.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class SubtitleItem(
     val id: Int,
+    val act: String? = null,
+    val role: String? = null,
     val text: String
 )
 
