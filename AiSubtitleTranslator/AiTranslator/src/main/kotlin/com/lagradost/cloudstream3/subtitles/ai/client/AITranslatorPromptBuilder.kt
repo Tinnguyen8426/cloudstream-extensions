@@ -74,7 +74,7 @@ object AITranslatorPromptBuilder {
                  * Casual (タメ口 - Tamekuchi: だ, dictionary form, 〜ね): Equals, peers, or senior speaking down to junior.
               5. Japanese Internal Monologue Markers:
                  * Sentences ending in non-interactive questions (〜だろうか, 〜のか, 〜か, 〜かしら), plain dictionary forms without keigo, or introspective exclamations (〜とはな, 〜まさか, 〜なんてこった) indicate Internal Monologue.
-                 * Set act: 'monologue', role: 'solo', and use 'mình', 'ta', 'tôi' or omit pronouns entirely; NEVER use 'anh' or 'em'.
+                 * Treat as Internal Monologue: use 'mình', 'ta', 'tôi' or omit pronouns entirely; NEVER use 'anh' or 'em'.
         """.trimIndent()
     }
 
@@ -90,7 +90,8 @@ object AITranslatorPromptBuilder {
                 - Quy tắc xưng hô Độc thoại nội tâm: Khi nhân vật tự suy nghĩ một mình (không có người nghe trực tiếp), dùng 'mình', 'ta', 'tôi' hoặc lược bỏ đại từ nhân xưng. Tuyệt đối KHÔNG tự xưng 'anh / em' khi độc thoại một mình.
                 - Suy nghĩ quan sát về người khác (Observational Thoughts): Khi độc thoại nội tâm là suy nghĩ quan sát, nhận định về người khác ("She is late", "What is he doing?"), BẮT BUỘC giữ nguyên ngôi thứ 3 ('cô ấy', 'anh ấy', 'cậu ấy', 'họ'...), tuyệt đối KHÔNG chuyển thành ngôi thứ 2 xưng hô đối thoại ('em', 'anh', 'cậu').
                 - Khóa thứ bậc hai chiều (Universal Hierarchy Lock): Trong hai lượt thoại đối đáp kế cận giữa 2 nhân vật, cặp vai vế xưng hô (senior <-> junior, ví dụ anh/em hoặc chú/cháu) phải giữ nguyên bất biến, không đảo lộn vai xưng hô giữa câu hỏi và câu đáp.
-                - Phân định theo từng lượt thoại (Per-Cue Decision): Vai trò 'act' và 'role' được đánh giá linh hoạt theo từng lượt thoại (per-cue), không khóa cứng vai trò của nhân vật cho toàn bộ bộ phim.
+                - Phân định theo từng lượt thoại (Per-Cue Decision): Ngữ khí và vai vế xưng hô (đối thoại hay độc thoại, trên hay dưới) được đánh giá linh hoạt theo từng lượt thoại (per-cue), không khóa cứng vai trò của nhân vật cho toàn bộ bộ phim.
+                - Khóa Thân Tộc Theo Đúng Cặp Nhân Vật (Pair-Scoped Kinship Lock): Mọi đại từ thân tộc ('bố/ba - con', 'mẹ - con', 'ông/bà - cháu', 'chú/cô/bác - cháu', 'vợ - chồng') CHỈ được phép áp dụng khi ĐÚNG 2 thành viên ruột thịt trong cặp quan hệ đó đang trực tiếp nói chuyện với nhau. CẤM kế thừa đại từ thân tộc từ [LOOKBEHIND_CONTEXT] sang cảnh công việc, đối thủ, đám đông, bạn bè hoặc nhân vật người lớn khác; khi gặp [SCENE_SHIFT_CAUTION], gap_s >= 2.5, hoặc đổi chủ đề/giọng điệu, BẮT BUỘC reset ngay về đại từ tình huống ('tôi - anh/cô/ông', 'anh - em', 'tao - mày').
                 - Thứ bậc dòng tộc thắng tuổi tác sinh học: Trong quan hệ gia tộc, vai vế huyết thống ghi đè tuổi sinh học ("chú ít tuổi hơn cháu" vẫn phải dịch xưng hô "chú - cháu", tuyệt đối không dùng "anh - em").
                 - Xung đột công sở vs Tuổi tác: Khi sếp nam trẻ tuổi nói chuyện với nhân viên nữ lớn tuổi hơn, sếp tự xưng "tôi/em" và gọi nhân viên là "chị" (cấm trịch thượng dùng "anh - em" và cấm lố bịch dùng "chú - cháu").
                 - Bất biến Nghịch đảo Xưng hô (Dyadic Reciprocity): Nếu nhân vật A xưng 'anh' gọi 'em', nhân vật B bắt buộc phải xưng 'em' gọi 'anh'. Tuyệt đối không để nhân vật tự xưng 'tôi' khi đang đối thoại thân mật với người thân/người yêu.
@@ -155,14 +156,23 @@ object AITranslatorPromptBuilder {
 
     fun getGenreDirectives(mediaContext: MediaContext?, targetLang: String): String {
         if (mediaContext == null || targetLang.lowercase(Locale.ROOT).trim() != "vi") return ""
-        val combinedMeta = (mediaContext.tags + listOf(mediaContext.plot, mediaContext.title))
+        val combinedMeta = (mediaContext.tags + mediaContext.genres + listOf(mediaContext.plot, mediaContext.title, mediaContext.mediaType))
             .joinToString(" ")
             .lowercase(Locale.ROOT)
 
         val isSchool = listOf("school", "học đường", "slice of life", "comedy", "youth", "shoujo", "đời thường").any { combinedMeta.contains(it) }
         val isPeriod = listOf("historical", "cổ trang", "wuxia", "kiếm hiệp", "xianxia", "period", "samurai", "martial arts").any { combinedMeta.contains(it) }
         val isFantasy = listOf("fantasy", "isekai", "magic", "dị giới", "tiên hiệp").any { combinedMeta.contains(it) }
+        val isDocumentary = mediaContext.mediaType.equals("Documentary", ignoreCase = true) ||
+            listOf("documentary", "tài liệu", "docuseries").any { combinedMeta.contains(it) }
+        val isAsianDrama = mediaContext.mediaType.equals("AsianDrama", ignoreCase = true) ||
+            listOf("asian drama", "asiandrama", "k-drama", "kdrama", "c-drama", "cdrama", "phim bộ châu á").any { combinedMeta.contains(it) }
         val isModern = listOf("workplace", "công sở", "office", "police", "investigation", "sci-fi", "crime", "hiện đại").any { combinedMeta.contains(it) }
+        val isWesternCinema = (
+            mediaContext.mediaType.equals("Movie", ignoreCase = true) ||
+                mediaContext.mediaType.equals("TvSeries", ignoreCase = true) ||
+                listOf("action", "sci-fi", "science fiction", "drama", "sports", "family", "boxing", "thriller", "crime", "hollywood").any { combinedMeta.contains(it) }
+            ) && !isSchool && !isPeriod && !isDocumentary && !isAsianDrama
 
         val sb = StringBuilder()
         if (isSchool) {
@@ -174,8 +184,19 @@ object AITranslatorPromptBuilder {
         if (isFantasy && !isPeriod) {
             sb.append("- Bối cảnh fantasy / dị giới: Chỉ xưng hô 'tiểu thư / thiếu gia / ngài' khi nhân vật được xác nhận rõ là quý tộc hoặc lãnh chúa trong tác phẩm. Giữa các thành viên tổ đội mạo hiểm giả, dùng 'anh - em', 'cô - cậu', 'ông - tôi' một cách bình đẳng.\n")
         }
-        if (isModern && !isSchool && !isPeriod) {
+        if (isDocumentary) {
+            sb.append("- Bối cảnh phim Tài liệu / Thuyết minh (Documentary): Dùng giọng văn thuyết minh khách quan, chuẩn mực ('ông', 'bà', 'họ', 'chúng ta', 'nó', 'người dân'). CẤM dùng xưng hô tình cảm/học đường như 'anh - em', 'tớ - cậu'.\n")
+        }
+        if (isAsianDrama && !isPeriod) {
+            sb.append("- Bối cảnh phim bộ Châu Á hiện đại (AsianDrama): Phân biệt rõ vai vế công sở và gia tộc hiện đại ('anh - em', 'chị - em', 'sếp - tôi/em', 'chú/cô - cháu'), ưu tiên khẩu ngữ tự nhiên, tránh lẫn từ ngữ cổ trang.\n")
+        }
+        if (isModern && !isSchool && !isPeriod && !isDocumentary) {
             sb.append("- Bối cảnh hiện đại / công sở: Gọi theo chức vụ hoặc 'anh - em', 'chị - em', 'sếp - em', 'tôi - anh/chị'.\n")
+        }
+        if (isWesternCinema) {
+            sb.append("- Bối cảnh phim Điện ảnh Âu Mỹ (Action / Sci-Fi / Drama / Sports / Family): Thoại ngắn gọn, tự nhiên kiểu điện ảnh Việt Nam ('tôi - anh/ông/cô', 'tao - mày' khi xung đột/sàn đấu/quán bar, 'anh - em' cặp đôi, chỉ dùng 'bố/ba - con' khi đúng cặp cha con ruột thịt).\n")
+            sb.append("  * Few-Shot Ngắt Xưng Hô Khi Cắt Cảnh (Scene-Cut Reset): Nếu lookbehind là cha con (\"Don't go out there, Dad.\" -> \"Đừng ra đó, bố ơi.\"), nhưng cue hiện tại có gap_s >= 3.0 hoặc [SCENE_SHIFT_CAUTION] chuyển sang đàm phán người lớn (\"Sign the deal tonight.\" -> \"Ký hợp đồng tối nay đi anh.\"), CẤM kéo tiếp 'bố - con'.\n")
+            sb.append("  * Few-Shot Khẩu Ngữ Tự Nhiên (Anti-Translationese): Dịch thoát ý tự nhiên, tránh dịch word-by-word cứng nhắc: \"You're kidding me?\" -> \"Nói đùa hả?\" / \"Anh giỡn tôi à?\" (tránh \"Bạn đang đùa với tôi sao?\"); \"Keep your voice down.\" -> \"Nói nhỏ thôi.\" (tránh \"Hãy giữ giọng của bạn nhỏ xuống.\").\n")
         }
         return sb.toString().trimEnd()
     }
@@ -199,6 +220,9 @@ object AITranslatorPromptBuilder {
         } else {
             "No pre-defined character roster available."
         }
+        val toneGuideLine = if (characterRegistry != null && characterRegistry.toneGuide.isNotBlank()) {
+            "\n- Tone & Style Guide: ${characterRegistry.toneGuide.trim()}"
+        } else ""
 
         val directives = getLanguageDirectives(targetLang)
         val genreDirectives = getGenreDirectives(mediaContext, targetLang)
@@ -209,33 +233,64 @@ object AITranslatorPromptBuilder {
             "\n\n### 2.1. SOURCE LANGUAGE (JAPANESE) YAKUWARIGO & RETENTION DIRECTIVES:\n${getJapaneseSourceDirectives()}"
         } else ""
 
-        val glossaryPrompt = if (!customGlossary.isNullOrBlank()) {
-            "\n### 7. GLOSSARY TERMS:\nStrictly adhere to the following terminology mappings:\n$customGlossary\n"
+        val autoGlossaryLines = characterRegistry?.autoGlossary?.entries
+            ?.filter { it.key.isNotBlank() && it.value.isNotBlank() }
+            ?.joinToString("\n") { (k, v) -> "- $k -> $v" }
+            ?: ""
+        val combinedGlossary = listOf(autoGlossaryLines, customGlossary?.trim() ?: "")
+            .filter { it.isNotBlank() }
+            .joinToString("\n")
+        val glossaryPrompt = if (combinedGlossary.isNotBlank()) {
+            "\n### 7. GLOSSARY TERMS:\nStrictly adhere to the following terminology mappings:\n$combinedGlossary\n"
         } else ""
 
-        val mediaContextPrompt = if (mediaContext != null &&
-            (mediaContext.title.isNotBlank() || mediaContext.plot.isNotBlank() || mediaContext.tags.isNotEmpty())
-        ) {
-            buildString {
+        val allTagsGenres = if (mediaContext != null) {
+            (mediaContext.tags + mediaContext.genres).distinct().filter { it.isNotBlank() }
+        } else emptyList()
+        val mediaContextPrompt = if (mediaContext == null) {
+            ""
+        } else {
+            val hasMediaInfo = mediaContext.title.isNotBlank() ||
+                mediaContext.plot.isNotBlank() ||
+                allTagsGenres.isNotEmpty() ||
+                mediaContext.mediaType.isNotBlank() ||
+                mediaContext.year != null ||
+                mediaContext.characterActors.isNotEmpty() ||
+                mediaContext.actors.isNotEmpty()
+            if (!hasMediaInfo) "" else buildString {
                 append("\n### 0. MEDIA CONTEXT:\n")
                 if (mediaContext.title.isNotBlank()) {
                     append("- Media Title: ${mediaContext.title}\n")
                 }
+                if (mediaContext.mediaType.isNotBlank()) {
+                    append("- Media Type: ${mediaContext.mediaType}\n")
+                }
+                if (mediaContext.year != null) {
+                    append("- Release Year: ${mediaContext.year}\n")
+                }
                 if (mediaContext.plot.isNotBlank()) {
                     append("- Plot / Synopsis: ${mediaContext.plot}\n")
                 }
-                if (mediaContext.tags.isNotEmpty()) {
-                    append("- Tags / Genres: ${mediaContext.tags.joinToString(", ")}\n")
+                if (allTagsGenres.isNotEmpty()) {
+                    append("- Tags / Genres: ${allTagsGenres.joinToString(", ")}\n")
+                }
+                if (mediaContext.characterActors.isNotEmpty()) {
+                    val castFormatted = mediaContext.characterActors.entries.take(15).joinToString(", ") { (actor, role) ->
+                        if (role.isNotBlank()) "$actor (as $role)" else actor
+                    }
+                    append("- Cast & Characters: $castFormatted\n")
+                } else if (mediaContext.actors.isNotEmpty()) {
+                    append("- Cast & Characters: ${mediaContext.actors.take(15).joinToString(", ")}\n")
                 }
             }
-        } else ""
+        }
 
         return """
             You are an elite, professional subtitle translation engine specializing in cinema and television localization into $targetLang.
             Translate the subtitle dialogues under [TARGET_CUES] with extreme contextual fidelity, natural conversational tone, and flawless character consistency.$mediaContextPrompt
 
             ### 1. CHARACTER ROSTER & RELATIONSHIPS:
-            $rosterJson
+            $rosterJson$toneGuideLine
 
             ### 2. TARGET LANGUAGE GRAMMATICAL DIRECTIVES ($targetLang):
             $fullDirectives$japanesePrompt
@@ -261,16 +316,30 @@ object AITranslatorPromptBuilder {
             - NEVER modify, reorder, translate, split, or omit any [[TAG_N]] token. They must remain in their exact relative positions around the translated text.
 
             ### 6. OUTPUT FORMAT:
-            Output MUST strictly be a valid JSON object adhering to the specified schema, containing a 'translations' array of objects with integer 'id', string 'act' ("dialogue" | "monologue"), string 'role' ("senior" | "junior" | "peer" | "solo"), and string 'text'.$glossaryPrompt
+            Output MUST strictly be a valid JSON object matching this exact schema:
+            {"translations":[{"id":<int>,"text":"<string>"}]}
+            - Every input cue ID in [TARGET_CUES] MUST appear exactly once in 'translations'.
+            - DO NOT output 'act', 'role', extra keys, markdown code fences, explanations, or commentary.$glossaryPrompt
         """.trimIndent()
+    }
+
+    private fun formatGapSec(gapMs: Long): String {
+        return String.format(Locale.US, "%.1f", gapMs / 1000.0)
     }
 
     fun buildUserPayload(
         cues: List<SubtitleCue>,
         lookbehind: List<ContextCue>,
-        lookahead: List<ContextCue>
+        lookahead: List<ContextCue>,
+        rollingSceneDigest: String? = null
     ): String {
         val sb = StringBuilder()
+
+        if (!rollingSceneDigest.isNullOrBlank()) {
+            sb.append("[ROLLING_SCENE_DIGEST]\n")
+            sb.append(rollingSceneDigest.trim())
+            sb.append("\n\n")
+        }
 
         if (lookbehind.isNotEmpty()) {
             sb.append("[LOOKBEHIND_CONTEXT]\n")
@@ -278,6 +347,7 @@ object AITranslatorPromptBuilder {
             val lbList = lookbehind.map { cue ->
                 val map = mutableMapOf<String, Any?>("id" to cue.index)
                 if (cue.speaker != null) map["speaker"] = cue.speaker
+                if (cue.gapMs >= 2500L) map["gap_s"] = formatGapSec(cue.gapMs)
                 map["src"] = cue.sourceText
                 map["translated"] = cue.translatedText ?: ""
                 map
@@ -286,11 +356,24 @@ object AITranslatorPromptBuilder {
             sb.append("\n\n")
         }
 
+        if (lookbehind.isNotEmpty() && cues.isNotEmpty()) {
+            val transitionGapMs = (cues.first().startMs - lookbehind.last().endMs).coerceAtLeast(0L)
+            if (transitionGapMs >= 3000L || cues.first().speaker == null) {
+                val speakerState = if (cues.first().speaker == null) "unverified" else "annotated"
+                sb.append("[SCENE_SHIFT_CAUTION: Time gap = ${formatGapSec(transitionGapMs)}s, speakers = $speakerState — verify speakers & vocatives in [TARGET_CUES]; DO NOT blindly inherit prior scene kinship pronouns.]\n")
+            }
+        }
+
         sb.append("[TARGET_CUES]\n")
         sb.append("(Translate ONLY these dialogue entries into the target language):\n")
-        val targetList = cues.map { cue ->
+        val targetList = cues.mapIndexed { idx, cue ->
+            val prevEnd = if (idx == 0) lookbehind.lastOrNull()?.endMs ?: -1L else cues[idx - 1].endMs
             val map = mutableMapOf<String, Any?>("id" to cue.index)
             if (cue.speaker != null) map["speaker"] = cue.speaker
+            if (prevEnd >= 0L) {
+                val gapMs = cue.startMs - prevEnd
+                if (gapMs >= 2500L) map["gap_s"] = formatGapSec(gapMs)
+            }
             map["text"] = if (cue.maskedText.isNotBlank()) cue.maskedText else cue.rawText
             map
         }
@@ -302,6 +385,7 @@ object AITranslatorPromptBuilder {
             val laList = lookahead.map { cue ->
                 val map = mutableMapOf<String, Any?>("id" to cue.index)
                 if (cue.speaker != null) map["speaker"] = cue.speaker
+                if (cue.gapMs >= 2500L) map["gap_s"] = formatGapSec(cue.gapMs)
                 map["src"] = cue.sourceText
                 map
             }
@@ -309,5 +393,96 @@ object AITranslatorPromptBuilder {
         }
 
         return sb.toString()
+    }
+
+    /**
+     * Pass 0 helper: samples up to ~maxSamples representative cues evenly across the film timeline,
+     * prioritizing lines containing proper names or family/title vocatives.
+     */
+    fun sampleRepresentativeCues(cues: List<SubtitleCue>, maxSamples: Int = 165): List<SubtitleCue> {
+        if (cues.size <= maxSamples) return cues
+        if (maxSamples <= 0) return emptyList()
+
+        val vocativePattern = Regex(
+            "(?i)\\b(dad|mom|son|father|mother|boss|mr\\.?|mrs\\.?|ms\\.?|coach|dr\\.?|sensei|sir|uncle|aunt|grandpa|grandma|brother|sister|bro|kid|captain)\\b|-san\\b|-sama\\b|-kun\\b|-chan\\b"
+        )
+        val properNounPattern = Regex("(?<!^)\\b[A-Z][a-z]{2,}\\b")
+
+        fun scoreCue(cue: SubtitleCue): Int {
+            val text = cue.rawText.trim()
+            if (text.isEmpty()) return -1
+            var score = 0
+            if (vocativePattern.containsMatchIn(text)) score += 3
+            if (properNounPattern.containsMatchIn(text)) score += 2
+            if (!cue.speaker.isNullOrBlank()) score += 1
+            return score
+        }
+
+        val selected = ArrayList<SubtitleCue>(maxSamples)
+        val total = cues.size
+        for (bucket in 0 until maxSamples) {
+            val startIdx = (bucket * total) / maxSamples
+            val endIdx = (((bucket + 1) * total) / maxSamples).coerceAtLeast(startIdx + 1).coerceAtMost(total)
+            var bestCue = cues[startIdx]
+            var bestScore = Int.MIN_VALUE
+            for (idx in startIdx until endIdx) {
+                val c = cues[idx]
+                val s = scoreCue(c)
+                if (s > bestScore) {
+                    bestScore = s
+                    bestCue = c
+                }
+            }
+            selected.add(bestCue)
+        }
+        return selected
+    }
+
+    /**
+     * Pass 0 helper: builds (systemPrompt, userPayload) to extract a GlobalFilmBible JSON.
+     */
+    fun buildFilmBiblePrompt(
+        mediaContext: MediaContext?,
+        sampledCues: List<SubtitleCue>,
+        targetLang: String
+    ): Pair<String, String> {
+        val systemPrompt = """
+            You are a senior localization director preparing a Global Film Bible for translating a film/series into $targetLang.
+            Analyze the synopsis, cast list, and representative dialogue timeline below, and output ONLY a single valid JSON object matching this schema:
+            {
+              "characters": [{"name": "Full Name", "aliases": ["Nickname"], "gender": "male|female|unknown", "age_group": "child|teen|adult|elder", "role": "Brief role"}],
+              "relationships": [{"pair": ["Char A", "Char B"], "type": "family|workplace|rivals|friends|romantic", "address_matrix": {"$targetLang": {"A_to_B": "pronoun", "B_to_A": "pronoun"}}}],
+              "auto_glossary": {"domain term": "consistent translation"},
+              "tone_guide": "Concise 1-2 sentence style & register guidance"
+            }
+            Rules:
+            - Extract up to ~15 key named characters.
+            - List explicit fixed relationship pairs (especially blood/family pairs like father-son vs non-family coworkers/rivals).
+            - Output raw JSON ONLY without markdown fences or explanation.
+        """.trimIndent()
+
+        val userPrompt = buildString {
+            if (mediaContext != null) {
+                append("[MEDIA_METADATA]\n")
+                if (mediaContext.title.isNotBlank()) append("Title: ${mediaContext.title}\n")
+                if (mediaContext.mediaType.isNotBlank()) append("Type: ${mediaContext.mediaType}\n")
+                if (mediaContext.year != null) append("Year: ${mediaContext.year}\n")
+                val genres = (mediaContext.tags + mediaContext.genres).distinct().filter { it.isNotBlank() }
+                if (genres.isNotEmpty()) append("Genres: ${genres.joinToString(", ")}\n")
+                if (mediaContext.plot.isNotBlank()) append("Plot: ${mediaContext.plot}\n")
+                if (mediaContext.characterActors.isNotEmpty()) {
+                    append("Cast: ${mediaContext.characterActors.entries.joinToString(", ") { (a, r) -> "$a -> $r" }}\n")
+                } else if (mediaContext.actors.isNotEmpty()) {
+                    append("Cast: ${mediaContext.actors.joinToString(", ")}\n")
+                }
+                append("\n")
+            }
+            append("[REPRESENTATIVE_DIALOGUE_SAMPLES]\n")
+            for (cue in sampledCues) {
+                val spk = if (!cue.speaker.isNullOrBlank()) "${cue.speaker}: " else ""
+                append("[${cue.index}] $spk${cue.rawText.replace('\n', ' ')}\n")
+            }
+        }
+        return systemPrompt to userPrompt
     }
 }

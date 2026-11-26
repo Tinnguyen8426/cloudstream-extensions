@@ -40,6 +40,8 @@ class DialogueContextWindow(
     @Synchronized
     fun recordFinalizedCues(cues: List<SubtitleCue>, translations: Map<Int, String>) {
         for (cue in cues) {
+            val prevEndMs = translatedHistory.lowerEntry(cue.index)?.value?.endMs ?: lastCueEndMs
+            val gapMs = if (prevEndMs >= 0L) (cue.startMs - prevEndMs).coerceAtLeast(0L) else 0L
             val transText = translations[cue.index] ?: cue.rawText
             val srcText = if (cue.maskedText.isNotBlank()) cue.maskedText else cue.rawText
             translatedHistory[cue.index] = ContextCue(
@@ -47,7 +49,8 @@ class DialogueContextWindow(
                 speaker = cue.speaker,
                 sourceText = srcText,
                 translatedText = transText,
-                endMs = cue.endMs
+                endMs = cue.endMs,
+                gapMs = gapMs
             )
             if (cue.endMs > lastCueEndMs) {
                 lastCueEndMs = cue.endMs
@@ -80,25 +83,41 @@ class DialogueContextWindow(
     }
 
     fun extractLookahead(allCues: List<SubtitleCue>, currentTargetEndIndex: Int): List<ContextCue> {
+        var prevEndMs = allCues.lastOrNull { it.index <= currentTargetEndIndex }?.endMs ?: -1L
         return allCues
             .filter { it.index > currentTargetEndIndex }
             .take(lookaheadSize)
             .map { cue ->
+                val gapMs = if (prevEndMs >= 0L) (cue.startMs - prevEndMs).coerceAtLeast(0L) else 0L
+                prevEndMs = cue.endMs
                 ContextCue(
                     index = cue.index,
                     speaker = cue.speaker,
                     sourceText = if (cue.maskedText.isNotBlank()) cue.maskedText else cue.rawText,
                     translatedText = null,
-                    endMs = cue.endMs
+                    endMs = cue.endMs,
+                    gapMs = gapMs
                 )
             }
+    }
+
+    fun computeTransitionGapMs(targetCues: List<SubtitleCue>, lookbehind: List<ContextCue>): Long {
+        if (targetCues.isEmpty() || lookbehind.isEmpty()) return 0L
+        return (targetCues.first().startMs - lookbehind.last().endMs).coerceAtLeast(0L)
+    }
+
+    fun isSceneShiftCaution(targetCues: List<SubtitleCue>, lookbehind: List<ContextCue>): Boolean {
+        if (targetCues.isEmpty() || lookbehind.isEmpty()) return false
+        return computeTransitionGapMs(targetCues, lookbehind) >= 3000L || targetCues.first().speaker == null
     }
 
     fun pruneRegistry(
         fullRegistry: TwoTierCharacterRegistry?,
         targetCues: List<SubtitleCue>,
         lookbehind: List<ContextCue> = emptyList(),
-        lookahead: List<ContextCue> = emptyList()
+        lookahead: List<ContextCue> = emptyList(),
+        maxTokens: Double = 250.0,
+        maxCharacters: Int = 6
     ): TwoTierCharacterRegistry {
         if (fullRegistry == null || fullRegistry.characters.isEmpty()) {
             return fullRegistry ?: TwoTierCharacterRegistry()
@@ -148,8 +167,9 @@ class DialogueContextWindow(
             cName in activeNames || char.aliases.any { it.trim().lowercase() in activeNames }
         }.toMutableList()
 
-        if (filteredChars.size > 6) {
-            filteredChars = filteredChars.take(6).toMutableList()
+        val effectiveMaxChars = maxCharacters.coerceAtLeast(1)
+        if (filteredChars.size > effectiveMaxChars) {
+            filteredChars = filteredChars.take(effectiveMaxChars).toMutableList()
         }
 
         val activeCharNames = filteredChars.map { it.name.trim().lowercase() }.toSet()
@@ -158,14 +178,25 @@ class DialogueContextWindow(
             rel.pair.isNotEmpty() && rel.pair.all { it.trim().lowercase() in activeCharNames }
         }.toMutableList()
 
-        var pruned = fullRegistry.copy(characters = filteredChars, relationships = filteredRels)
+        var currentToneGuide = fullRegistry.toneGuide
+        var currentAutoGlossary = fullRegistry.autoGlossary
+        var pruned = fullRegistry.copy(
+            characters = filteredChars,
+            relationships = filteredRels,
+            toneGuide = currentToneGuide,
+            autoGlossary = currentAutoGlossary
+        )
 
-        // 5. Hard token budget enforcement (<= 250.0 tokens)
-        while (estimateTokens(pruned) > 250.0) {
+        // 5. Hard token budget enforcement (<= maxTokens)
+        while (estimateTokens(pruned) > maxTokens) {
             if (filteredRels.isNotEmpty()) {
                 filteredRels.removeAt(filteredRels.size - 1)
             } else if (filteredChars.size > 3) {
                 filteredChars.removeAt(filteredChars.size - 1)
+            } else if (currentToneGuide.isNotBlank()) {
+                currentToneGuide = ""
+            } else if (currentAutoGlossary.isNotEmpty()) {
+                currentAutoGlossary = emptyMap()
             } else {
                 var modified = false
                 filteredChars = filteredChars.map { char ->
@@ -180,8 +211,13 @@ class DialogueContextWindow(
                     }
                     updated
                 }.toMutableList()
-                pruned = pruned.copy(characters = filteredChars, relationships = filteredRels)
-                if (!modified || estimateTokens(pruned) > 250.0) {
+                pruned = pruned.copy(
+                    characters = filteredChars,
+                    relationships = filteredRels,
+                    toneGuide = currentToneGuide,
+                    autoGlossary = currentAutoGlossary
+                )
+                if (!modified || estimateTokens(pruned) > maxTokens) {
                     if (filteredChars.size > 1) {
                         filteredChars.removeAt(filteredChars.size - 1)
                     } else {
@@ -189,7 +225,12 @@ class DialogueContextWindow(
                     }
                 }
             }
-            pruned = pruned.copy(characters = filteredChars, relationships = filteredRels)
+            pruned = pruned.copy(
+                characters = filteredChars,
+                relationships = filteredRels,
+                toneGuide = currentToneGuide,
+                autoGlossary = currentAutoGlossary
+            )
         }
 
         return pruned

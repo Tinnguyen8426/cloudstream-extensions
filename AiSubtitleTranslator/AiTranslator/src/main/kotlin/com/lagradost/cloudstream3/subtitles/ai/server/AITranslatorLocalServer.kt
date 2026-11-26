@@ -152,6 +152,7 @@ object AITranslatorLocalServer {
     fun unregisterSession(key: String) {
         val cleanKey = if (key.endsWith(".srt")) key.removeSuffix(".srt") else key
         activeSessions.remove(cleanKey)
+        registeredFiles.remove("$cleanKey.srt")
     }
 
     fun registerSessionKeyFile(sessionKey: String, file: File) {
@@ -273,9 +274,17 @@ object AITranslatorLocalServer {
             if (!fileToServe.exists() || !fileToServe.isFile) {
                 val sessionKey = fileName.removeSuffix(".srt")
                 val session = activeSessions[sessionKey] ?: activeSessions[fileName] ?: activeSessions[rawFileName]
-                if (session != null && !session.isCompleted && session.completedFile == null && !session.isCancelled) {
+                if (session?.isCancelled == true || session?.isTargetLanguageBypassed == true) {
+                    sendErrorResponse(outputStream, 404, "Translation Cancelled")
+                    return
+                }
+                if (session != null && !session.isCompleted && session.completedFile == null && !session.isCancelled && !session.isTargetLanguageBypassed) {
                     logI(TAG, "Active translation session in flight for $fileName. Awaiting completion (timeout: 60s)...")
                     session.awaitCompletion(60000L)
+                }
+                if (session?.isCancelled == true || session?.isTargetLanguageBypassed == true) {
+                    sendErrorResponse(outputStream, 404, "Translation Cancelled")
+                    return
                 }
                 fileToServe = registeredFiles[fileName]
                     ?: registeredFiles[rawFileName]

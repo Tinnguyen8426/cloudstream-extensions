@@ -1,19 +1,31 @@
 package com.lagradost.cloudstream3.subtitles.ai.profile
 
 import android.content.Context
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import com.lagradost.cloudstream3.subtitles.ai.models.CharacterEntity
+import com.lagradost.cloudstream3.subtitles.ai.models.MediaContext
 import com.lagradost.cloudstream3.subtitles.ai.models.TwoTierCharacterRegistry
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import java.io.IOException
+import java.net.URLEncoder
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * Zero-token cast pre-scan resolver using AniList GraphQL API.
@@ -49,12 +61,82 @@ object AniListCastResolver {
 
     private val mapper: ObjectMapper = ObjectMapper().registerKotlinModule()
 
+    private fun JsonNode?.textOrNull(): String? =
+        this?.takeIf { !it.isNull && it.isTextual }?.asText()?.trim()?.takeIf { it.isNotEmpty() }
+
+    private fun JsonNode?.textOrNumberString(): String? =
+        this?.takeIf { !it.isNull && (it.isTextual || it.isNumber) }?.asText()?.trim()?.takeIf { it.isNotEmpty() }
+
     private val defaultClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(2, TimeUnit.SECONDS)
             .readTimeout(2, TimeUnit.SECONDS)
             .callTimeout(3, TimeUnit.SECONDS)
             .build()
+    }
+
+    private data class BoundedHttpResponse(
+        val isSuccessful: Boolean,
+        val body: String?
+    )
+
+    private fun boundedClient(httpClient: OkHttpClient?): OkHttpClient {
+        if (httpClient == null) return defaultClient
+        return httpClient.newBuilder()
+            .connectTimeout(2, TimeUnit.SECONDS)
+            .readTimeout(2, TimeUnit.SECONDS)
+            .callTimeout(3, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private suspend fun executeBoundedCall(
+        client: OkHttpClient,
+        request: Request
+    ): BoundedHttpResponse = suspendCancellableCoroutine { cont ->
+        val call = client.newCall(request)
+        val completed = AtomicBoolean(false)
+        val cancelledByCoroutine = AtomicBoolean(false)
+
+        cont.invokeOnCancellation {
+            cancelledByCoroutine.set(true)
+            try {
+                call.cancel()
+            } catch (_: Throwable) {}
+        }
+
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (completed.compareAndSet(false, true) && cont.isActive) {
+                    if (cancelledByCoroutine.get()) {
+                        cont.resumeWithException(CancellationException("Cast resolver HTTP call cancelled", e))
+                    } else {
+                        cont.resumeWithException(e)
+                    }
+                }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                try {
+                    val result = response.use { resp ->
+                        BoundedHttpResponse(
+                            isSuccessful = resp.isSuccessful,
+                            body = resp.body?.string()
+                        )
+                    }
+                    if (completed.compareAndSet(false, true) && cont.isActive) {
+                        cont.resume(result)
+                    }
+                } catch (t: Throwable) {
+                    if (completed.compareAndSet(false, true) && cont.isActive) {
+                        if (cancelledByCoroutine.get()) {
+                            cont.resumeWithException(CancellationException("Cast resolver HTTP response cancelled", t))
+                        } else {
+                            cont.resumeWithException(t)
+                        }
+                    }
+                }
+            }
+        })
     }
 
     /**
@@ -109,7 +191,7 @@ object AniListCastResolver {
         return withTimeoutOrNull(3000L) {
             withContext(Dispatchers.IO) {
                 try {
-                    val client = httpClient ?: defaultClient
+                    val client = boundedClient(httpClient)
 
                     val payload = mapOf(
                         "query" to ANILIST_QUERY,
@@ -126,46 +208,47 @@ object AniListCastResolver {
                         .header("User-Agent", "CloudStream-AiTranslator/1.0")
                         .build()
 
-                    client.newCall(request).execute().use { response ->
-                        if (!response.isSuccessful) {
-                            return@withContext emptyList()
-                        }
-
-                        val bodyString = response.body?.string() ?: return@withContext emptyList()
-                        val root = mapper.readTree(bodyString)
-
-                        val errors = root.get("errors")
-                        if (errors != null && errors.isArray && !errors.isEmpty) {
-                            return@withContext emptyList()
-                        }
-
-                        val data = root.get("data")?.get("Media") ?: return@withContext emptyList()
-                        val edges = data.get("characters")?.get("edges") ?: return@withContext emptyList()
-
-                        val result = mutableListOf<CharacterEntity>()
-                        for (edge in edges) {
-                            val role = edge.get("role")?.asText() ?: ""
-                            val node = edge.get("node") ?: continue
-                            val nameNode = node.get("name")
-                            val full = nameNode?.get("full")?.asText()?.takeIf { it.isNotBlank() }
-                            val native = nameNode?.get("native")?.asText()?.takeIf { it.isNotBlank() }
-                            val name = full ?: native ?: continue
-                            val gender = node.get("gender")?.asText()?.takeIf { it.isNotBlank() } ?: "unknown"
-                            val aliases = if (native != null && native != name) listOf(native) else emptyList()
-                            result.add(
-                                CharacterEntity(
-                                    name = name,
-                                    aliases = aliases,
-                                    gender = gender,
-                                    role = role,
-                                    viPronounHint = null,
-                                    isEphemeral = false
-                                )
-                            )
-                        }
-                        result
+                    val response = executeBoundedCall(client, request)
+                    if (!response.isSuccessful) {
+                        return@withContext emptyList()
                     }
-                } catch (_: Throwable) {
+
+                    val bodyString = response.body ?: return@withContext emptyList()
+                    val root = mapper.readTree(bodyString)
+
+                    val errors = root.get("errors")
+                    if (errors != null && errors.isArray && !errors.isEmpty) {
+                        return@withContext emptyList()
+                    }
+
+                    val data = root.get("data")?.get("Media") ?: return@withContext emptyList()
+                    val edges = data.get("characters")?.get("edges") ?: return@withContext emptyList()
+
+                    val result = mutableListOf<CharacterEntity>()
+                    for (edge in edges) {
+                        if (edge == null || edge.isNull || !edge.isObject) continue
+                        val role = edge.get("role").textOrNull() ?: ""
+                        val node = edge.get("node")?.takeIf { !it.isNull && it.isObject } ?: continue
+                        val nameNode = node.get("name")?.takeIf { !it.isNull && it.isObject }
+                        val full = nameNode?.get("full").textOrNull()
+                        val native = nameNode?.get("native").textOrNull()
+                        val name = full ?: native ?: continue
+                        val gender = node.get("gender").textOrNull() ?: "unknown"
+                        val aliases = if (native != null && native != name) listOf(native) else emptyList()
+                        result.add(
+                            CharacterEntity(
+                                name = name,
+                                aliases = aliases,
+                                gender = gender,
+                                role = role,
+                                viPronounHint = null,
+                                isEphemeral = false
+                            )
+                        )
+                    }
+                    result
+                } catch (t: Throwable) {
+                    if (t is CancellationException) throw t
                     emptyList()
                 }
             }
@@ -199,6 +282,237 @@ object AniListCastResolver {
             mediaTitle = cleanTitle,
             characters = characters,
             relationships = emptyList()
+        )
+        CharacterProfileManager.saveProfile(context, cleanTitle, registry, isEphemeral = false)
+        if (rawTitle.isNotBlank() && rawTitle != cleanTitle) {
+            CharacterProfileManager.saveProfile(context, rawTitle, registry, isEphemeral = false)
+        }
+        return registry
+    }
+
+    /**
+     * Universal cast resolver supporting Anime (AniList) and Live-Action Movies/Series/AsianDrama
+     * (CloudStream ActorData.roleString + Cinemeta catalog/meta API within a <= 3s timeout).
+     */
+    suspend fun resolveUniversalCast(
+        context: Context?,
+        rawTitle: String,
+        mediaContext: MediaContext?,
+        httpClient: OkHttpClient? = null,
+        cinemetaBaseUrl: String = "https://v3-cinemeta.strem.io"
+    ): TwoTierCharacterRegistry? {
+        val seedTitle = mediaContext?.title?.takeIf { it.isNotBlank() } ?: rawTitle
+        val cleanTitle = cleanAnimeTitle(seedTitle)
+        if (cleanTitle.isBlank()) return null
+
+        val existing = CharacterProfileManager.getProfile(context, cleanTitle)
+            ?: CharacterProfileManager.getProfile(context, rawTitle)
+        if (existing != null && existing.characters.isNotEmpty()) {
+            return existing
+        }
+
+        val combinedTags = (mediaContext?.tags ?: emptyList()) + (mediaContext?.genres ?: emptyList())
+        val isAnime = mediaContext == null ||
+            mediaContext.mediaType.equals("Anime", ignoreCase = true) ||
+            mediaContext.mediaType.equals("AnimeMovie", ignoreCase = true) ||
+            mediaContext.mediaType.equals("OVA", ignoreCase = true) ||
+            (mediaContext.mediaType.isBlank() && combinedTags.any { it.contains("anime", ignoreCase = true) }) ||
+            (mediaContext.mediaType.isBlank() && mediaContext.characterActors.isEmpty())
+
+        if (isAnime) {
+            val animeChars = resolveCast(cleanTitle, httpClient)
+            if (animeChars.isEmpty()) return null
+            val registry = TwoTierCharacterRegistry(
+                mediaTitle = cleanTitle,
+                characters = animeChars,
+                relationships = emptyList()
+            )
+            CharacterProfileManager.saveProfile(context, cleanTitle, registry, isEphemeral = false)
+            if (rawTitle.isNotBlank() && rawTitle != cleanTitle) {
+                CharacterProfileManager.saveProfile(context, rawTitle, registry, isEphemeral = false)
+            }
+            return registry
+        }
+
+        // Live-Action path: seed from LoadResponse characterActors + Cinemeta /catalog/ & /meta/
+        val chars = mutableListOf<CharacterEntity>()
+        val seenNames = mutableSetOf<String>()
+
+        fun addCharacterRole(rawRole: String, actorName: String) {
+            val parts = rawRole.split("/")
+            for (part in parts) {
+                val cleaned = part
+                    .replace(Regex("(?i)\\((voice|uncredited|as\\s+[^)]+)\\)"), " ")
+                    .replace(Regex("\\s+"), " ")
+                    .trim()
+                if (cleaned.isBlank()) continue
+                val key = cleaned.lowercase(Locale.ROOT)
+                if (seenNames.add(key)) {
+                    val roleDesc = if (actorName.isNotBlank()) "Played by $actorName" else "Cast"
+                    chars.add(
+                        CharacterEntity(
+                            name = cleaned,
+                            role = roleDesc,
+                            gender = "unknown",
+                            isEphemeral = false
+                        )
+                    )
+                }
+            }
+        }
+
+        mediaContext?.characterActors?.forEach { (actorName, roleString) ->
+            if (roleString.isNotBlank()) {
+                addCharacterRole(roleString, actorName.trim())
+            }
+        }
+
+        var toneGuide = ""
+        val cinemetaResult = withTimeoutOrNull(3000L) {
+            withContext(Dispatchers.IO) {
+                try {
+                    val client = boundedClient(httpClient)
+                    val base = cinemetaBaseUrl.trimEnd('/')
+                    val cinemetaType = if (
+                        mediaContext?.mediaType.equals("TvSeries", ignoreCase = true) ||
+                        mediaContext?.mediaType.equals("AsianDrama", ignoreCase = true)
+                    ) "series" else "movie"
+
+                    val encoded = URLEncoder.encode(cleanTitle, "UTF-8").replace("+", "%20")
+                    val searchUrl = "$base/catalog/$cinemetaType/top/search=$encoded.json"
+                    val searchReq = Request.Builder()
+                        .url(searchUrl)
+                        .get()
+                        .header("Accept", "application/json")
+                        .header("User-Agent", "CloudStream-AiTranslator/1.0")
+                        .build()
+
+                    val searchResp = executeBoundedCall(client, searchReq)
+                    val imdbId: String? = if (!searchResp.isSuccessful) {
+                        null
+                    } else {
+                        val body = searchResp.body
+                        if (body == null) null else {
+                            val root = mapper.readTree(body)
+                            val metas = root.get("metas")
+                            if (metas == null || !metas.isArray || metas.isEmpty) {
+                                null
+                            } else {
+                                val cleanLower = cleanTitle.lowercase(Locale.ROOT)
+                                val targetYear = mediaContext?.year?.toString()
+                                var bestId: String? = null
+                                var bestScore = Int.MIN_VALUE
+                                for (meta in metas) {
+                                    if (meta == null || meta.isNull || !meta.isObject) continue
+                                    val candidateId = meta.get("imdb_id").textOrNull()?.takeIf { it.startsWith("tt") }
+                                        ?: meta.get("id").textOrNull()?.takeIf { it.startsWith("tt") }
+                                        ?: continue
+                                    val name = meta.get("name").textOrNull()?.lowercase(Locale.ROOT) ?: ""
+                                    var score = 0
+                                    if (name.isNotEmpty()) {
+                                        if (name == cleanLower) score += 10
+                                        else if (name.startsWith(cleanLower) || cleanLower.startsWith(name)) score += 5
+                                        else if (name.contains(cleanLower)) score += 2
+                                    }
+                                    val releaseInfo = meta.get("releaseInfo").textOrNumberString()
+                                        ?: meta.get("year").textOrNumberString()
+                                        ?: ""
+                                    if (targetYear != null && releaseInfo.contains(targetYear)) {
+                                        score += 5
+                                    }
+                                    if (score > bestScore) {
+                                        bestScore = score
+                                        bestId = candidateId
+                                    }
+                                }
+                                bestId
+                            }
+                        }
+                    }
+
+                    if (imdbId == null) return@withContext ""
+
+                    val metaUrl = "$base/meta/$cinemetaType/$imdbId.json"
+                    val metaReq = Request.Builder()
+                        .url(metaUrl)
+                        .get()
+                        .header("Accept", "application/json")
+                        .header("User-Agent", "CloudStream-AiTranslator/1.0")
+                        .build()
+
+                    val metaResp = executeBoundedCall(client, metaReq)
+                    if (!metaResp.isSuccessful) return@withContext ""
+                    val body = metaResp.body ?: return@withContext ""
+                    val root = mapper.readTree(body)
+                    val metaNode = root.get("meta") ?: return@withContext ""
+
+                    val appCast = metaNode.get("app_extras")?.get("cast")
+                    if (appCast != null && appCast.isArray) {
+                        for (entry in appCast) {
+                            if (entry == null || entry.isNull || !entry.isObject) continue
+                            val actor = entry.get("name").textOrNull() ?: ""
+                            val charName = entry.get("character").textOrNull() ?: ""
+                            if (charName.isNotBlank()) {
+                                addCharacterRole(charName, actor)
+                            }
+                        }
+                    }
+
+                    if (chars.isEmpty()) {
+                        val rawCast = metaNode.get("cast")
+                        if (rawCast != null && rawCast.isArray) {
+                            var count = 0
+                            for (actorNode in rawCast) {
+                                if (count >= 10) break
+                                val actor = actorNode.textOrNull() ?: ""
+                                if (actor.isNotBlank() && seenNames.add(actor.lowercase(Locale.ROOT))) {
+                                    chars.add(
+                                        CharacterEntity(
+                                            name = actor,
+                                            role = "Cast",
+                                            gender = "unknown",
+                                            isEphemeral = false
+                                        )
+                                    )
+                                    count++
+                                }
+                            }
+                        }
+                    }
+
+                    val metaGenres = mutableListOf<String>()
+                    val genresNode = metaNode.get("genres")?.takeIf { !it.isNull && it.isArray }
+                        ?: metaNode.get("genre")?.takeIf { !it.isNull && it.isArray }
+                    if (genresNode != null) {
+                        for (g in genresNode) {
+                            val gs = g.textOrNull()
+                            if (!gs.isNullOrBlank()) metaGenres.add(gs)
+                        }
+                    }
+                    if (metaGenres.isNotEmpty()) {
+                        "Genres: ${metaGenres.joinToString(", ")}"
+                    } else {
+                        ""
+                    }
+                } catch (t: Throwable) {
+                    if (t is CancellationException) throw t
+                    ""
+                }
+            }
+        }
+        if (!cinemetaResult.isNullOrBlank()) {
+            toneGuide = cinemetaResult
+        }
+
+        if (chars.isEmpty() && toneGuide.isBlank()) {
+            return null
+        }
+
+        val registry = TwoTierCharacterRegistry(
+            mediaTitle = cleanTitle,
+            characters = chars,
+            relationships = emptyList(),
+            toneGuide = toneGuide
         )
         CharacterProfileManager.saveProfile(context, cleanTitle, registry, isEphemeral = false)
         if (rawTitle.isNotBlank() && rawTitle != cleanTitle) {

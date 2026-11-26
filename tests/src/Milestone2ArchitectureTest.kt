@@ -3,6 +3,9 @@ package tests.unit
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import com.lagradost.cloudstream3.subtitles.ai.client.AITranslatorPromptBuilder
+import com.lagradost.cloudstream3.subtitles.ai.client.AnthropicTranslatorClient
+import com.lagradost.cloudstream3.subtitles.ai.client.GeminiTranslatorClient
+import com.lagradost.cloudstream3.subtitles.ai.client.OpenAITranslatorClient
 import com.lagradost.cloudstream3.subtitles.ai.client.PacingGovernor
 import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
 import com.lagradost.cloudstream3.subtitles.ai.models.*
@@ -13,8 +16,24 @@ import com.lagradost.cloudstream3.subtitles.ai.profile.CharacterProfileManager
 import com.lagradost.cloudstream3.subtitles.ai.session.AITranslationSession
 import com.lagradost.cloudstream3.subtitles.ai.session.DialogueContextWindow
 import com.lagradost.cloudstream3.subtitles.ai.session.SubtitleReconciler
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
 import java.io.File
+import java.net.ServerSocket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 fun assertTrue(msg: String, condition: Boolean) {
     if (!condition) {
@@ -356,7 +375,7 @@ fun main() = runBlocking {
     assertTrue("Vietnamese prompt includes Pragmatic Dialogue vs Monologue matrix", promptVi.contains("Ma trận Nhận diện Hành vi Ngôn ngữ"))
     assertTrue("Vietnamese prompt includes Observational Thoughts directive", promptVi.contains("Suy nghĩ quan sát về người khác"))
     assertTrue("Vietnamese prompt includes Universal Hierarchy Lock", promptVi.contains("Khóa thứ bậc hai chiều"))
-    assertTrue("Prompt output schema requires act and role before text", promptVi.contains("'act'") && promptVi.contains("'role'"))
+    assertTrue("Prompt output schema enforces lean {id, text} and forbids 'act'/'role'", promptVi.contains("{\"translations\":[{\"id\":<int>,\"text\":\"<string>\"}]}") && promptVi.contains("DO NOT output 'act', 'role'"))
 
     val schoolContext = MediaContext(title = "Horimiya", tags = listOf("Romance", "School", "Comedy"))
     val schoolPrompt = AITranslatorPromptBuilder.buildSystemPrompt("vi", registry, null, schoolContext)
@@ -455,9 +474,10 @@ fun main() = runBlocking {
     println("\n--- [Test 10: TranslatorConfig Keys & Defaults] ---")
     TranslatorConfig.resetToDefaults(null)
     assertEquals("enableCharacterProfiling default", true, TranslatorConfig.enableCharacterProfiling)
-    assertEquals("contextWindowSize default", 6, TranslatorConfig.contextWindowSize)
+    assertEquals("contextWindowSize default", 12, TranslatorConfig.contextWindowSize)
     assertEquals("dynamicScenePauseMs default", 1800L, TranslatorConfig.dynamicScenePauseMs)
-    assertEquals("maxChunkCues default", 28, TranslatorConfig.maxChunkCues)
+    assertEquals("maxChunkCues default", 45, TranslatorConfig.maxChunkCues)
+    assertEquals("highSpeedMode default", false, TranslatorConfig.highSpeedMode)
 
     // -------------------------------------------------------------------------
     // TEST 11: AniList Title Sanitizer & Fact-Only Character Entity Model
@@ -645,7 +665,368 @@ fun main() = runBlocking {
     assertEquals("Cue 2 micro-healed interjection", "Ừ", healedResult[2])
     assertEquals("Cue 3 translation", "Đi thôi!", healedResult[3])
 
+    // -------------------------------------------------------------------------
+    // TEST 14: M1 v11 Rich Input Context, Lean Clients, Cancellable OkHttp & Film Bible
+    // -------------------------------------------------------------------------
+    println("\n--- [Test 14: M1 v11 Rich Context, Lean Clients, Cancellation & Film Bible] ---")
+
+    // 14.1 Gemini: omitted thinkingConfig, 8192 maxOutputTokens, {id,text} schema, non-thought parts filter, single-attempt 429 RPM, generateJsonPrompt
+    val capturedGeminiBody = AtomicReference<String>("")
+    val mockGeminiThinkClient = OkHttpClient.Builder().addInterceptor { chain ->
+        val req = chain.request()
+        val buf = Buffer()
+        req.body?.writeTo(buf)
+        capturedGeminiBody.set(buf.readUtf8())
+        val respJson = """
+            {
+              "candidates": [
+                {
+                  "content": {
+                    "parts": [
+                      {"thought": true, "text": "Let me analyze the kinship relationship first..."},
+                      {"text": "{\"translations\":[{\"id\":1,\"text\":\"Đừng ra đó, bố ơi.\"}]}"}
+                    ]
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+        Response.Builder()
+            .request(req)
+            .protocol(Protocol.HTTP_1_1)
+            .code(200)
+            .message("OK")
+            .body(respJson.toResponseBody("application/json".toMediaType()))
+            .build()
+    }.build()
+
+    val geminiV11 = GeminiTranslatorClient(apiKey = "test-gem", httpClient = mockGeminiThinkClient)
+    val gemRes = geminiV11.translateChunkWithSceneDigest(
+        cues = listOf(SubtitleCue(index = 1, startMs = 1000L, endMs = 3000L, rawText = "Don't go out there, Dad.")),
+        targetLang = "vi",
+        rollingSceneDigest = "Charlie and Max in the workshop"
+    )
+    assertTrue("Gemini v11 filters thought=true part and parses translation", gemRes.isSuccess && gemRes.translations[1] == "Đừng ra đó, bố ơi.")
+    val gemReqTree = mapper.readTree(capturedGeminiBody.get())
+    val gemGenCfg = gemReqTree.get("generationConfig")
+    assertFalse("Gemini omits thinkingConfig", capturedGeminiBody.get().contains("thinkingConfig") || capturedGeminiBody.get().contains("thinkingBudget") || capturedGeminiBody.get().contains("thinkingLevel"))
+    assertEquals("Gemini maxOutputTokens is 8192", 8192, gemGenCfg?.get("maxOutputTokens")?.asInt())
+    val gemSchemaProps = gemGenCfg?.get("responseSchema")?.get("properties")?.get("translations")?.get("items")?.get("properties")
+    assertTrue("Gemini schema has id & text only (no act/role)", gemSchemaProps?.has("id") == true && gemSchemaProps.has("text") && !gemSchemaProps.has("act") && !gemSchemaProps.has("role"))
+    val gemUserText = gemReqTree.get("contents")?.get(0)?.get("parts")?.get(0)?.get("text")?.asText() ?: ""
+    assertTrue("Gemini passes rollingSceneDigest in user payload", gemUserText.contains("[ROLLING_SCENE_DIGEST]") && gemUserText.contains("Charlie and Max"))
+
+    // 14.1b Gemini single-attempt on 429 RPM (no nested internal retry)
+    val rpmCalls = AtomicInteger(0)
+    val mockGeminiRpmClient = OkHttpClient.Builder().addInterceptor { chain ->
+        rpmCalls.incrementAndGet()
+        Response.Builder()
+            .request(chain.request())
+            .protocol(Protocol.HTTP_1_1)
+            .code(429)
+            .message("Too Many Requests")
+            .body("""{"error":{"code":429,"message":"Quota exceeded for GenerateRequestsPerMinute"}}""".toResponseBody("application/json".toMediaType()))
+            .build()
+    }.build()
+    val geminiRpmRes = GeminiTranslatorClient("k", httpClient = mockGeminiRpmClient)
+        .translateChunk(listOf(SubtitleCue(index = 1, startMs = 0L, endMs = 1000L, rawText = "Hi")), targetLang = "vi")
+    assertEquals("Gemini executes single attempt per translateChunk call", 1, rpmCalls.get())
+    assertTrue("Gemini 429 RPM returns success=false, retryable=true, isQuotaExhausted=false", !geminiRpmRes.isSuccess && geminiRpmRes.retryable && !geminiRpmRes.isQuotaExhausted)
+
+    // 14.1c Gemini generateJsonPrompt (Pass 0)
+    val mockGeminiJsonPromptClient = OkHttpClient.Builder().addInterceptor { chain ->
+        val json = """{"candidates":[{"content":{"parts":[{"thought":true,"text":"thinking"},{"text":"{\"tone_guide\":\"Gritty boxing drama\"}"}]}}]}"""
+        Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+            .body(json.toResponseBody("application/json".toMediaType())).build()
+    }.build()
+    val jsonPromptOut = GeminiTranslatorClient("k", httpClient = mockGeminiJsonPromptClient).generateJsonPrompt("sys", "usr", timeoutSeconds = 5L)
+    assertEquals("Gemini generateJsonPrompt filters thought and returns raw JSON", """{"tone_guide":"Gritty boxing drama"}""", jsonPromptOut)
+
+    // 14.2 OpenAI: lean {id, text} schema, max_tokens 8192, generateJsonPrompt
+    val capturedOpenAiBody = AtomicReference<String>("")
+    val mockOpenAiV11Client = OkHttpClient.Builder().addInterceptor { chain ->
+        val buf = Buffer()
+        chain.request().body?.writeTo(buf)
+        capturedOpenAiBody.set(buf.readUtf8())
+        val respJson = """{"choices":[{"message":{"content":"{\"translations\":[{\"id\":1,\"text\":\"Ký hợp đồng tối nay.\"}]}"}}]}"""
+        Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+            .body(respJson.toResponseBody("application/json".toMediaType())).build()
+    }.build()
+    val openAiV11 = OpenAITranslatorClient("sk-test", httpClient = mockOpenAiV11Client)
+    val oaiRes = openAiV11.translateChunk(listOf(SubtitleCue(index = 1, startMs = 0L, endMs = 1000L, rawText = "Sign the deal tonight.")), targetLang = "vi")
+    assertTrue("OpenAI v11 parses lean translation", oaiRes.isSuccess && oaiRes.translations[1] == "Ký hợp đồng tối nay.")
+    val oaiTree = mapper.readTree(capturedOpenAiBody.get())
+    assertEquals("OpenAI max_tokens is 8192", 8192, oaiTree.get("max_tokens")?.asInt())
+    val oaiProps = oaiTree.get("response_format")?.get("json_schema")?.get("schema")?.get("properties")?.get("translations")?.get("items")?.get("properties")
+    assertTrue("OpenAI schema has id & text only (no act/role)", oaiProps?.has("id") == true && oaiProps.has("text") && !oaiProps.has("act") && !oaiProps.has("role"))
+    assertFalse("OpenAI schema omits discovered_characters", oaiTree.get("response_format")?.get("json_schema")?.get("schema")?.get("properties")?.has("discovered_characters") == true)
+
+    // 14.3 Anthropic: unified prefill, max_tokens 8192, conditional cache_control, both ] and ]} reconstruction, isCreditExhaustion
+    val capturedAnthropicOfficial = AtomicReference<String>("")
+    val mockAnthropicOfficial = OkHttpClient.Builder().addInterceptor { chain ->
+        val buf = Buffer()
+        chain.request().body?.writeTo(buf)
+        capturedAnthropicOfficial.set(buf.readUtf8())
+        val respJson = """{"content":[{"type":"text","text":"{\"id\":1,\"text\":\"Nói nhỏ thôi.\"}]}"}]}"""
+        Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+            .body(respJson.toResponseBody("application/json".toMediaType())).build()
+    }.build()
+    val anthRes = AnthropicTranslatorClient("ant-key", httpClient = mockAnthropicOfficial)
+        .translateChunk(listOf(SubtitleCue(index = 1, startMs = 0L, endMs = 1000L, rawText = "Keep your voice down.")), targetLang = "vi")
+    assertTrue("Anthropic unified prefill + ]} continuation parses", anthRes.isSuccess && anthRes.translations[1] == "Nói nhỏ thôi.")
+    val anthTree = mapper.readTree(capturedAnthropicOfficial.get())
+    assertEquals("Anthropic max_tokens is 8192", 8192, anthTree.get("max_tokens")?.asInt())
+    assertTrue("Anthropic official URL uses cache_control array system", anthTree.get("system")?.isArray == true && anthTree.get("system")?.get(0)?.has("cache_control") == true)
+    assertEquals("Anthropic assistant prefill is unified", "{\"translations\": [", anthTree.get("messages")?.get(1)?.get("content")?.asText())
+    assertTrue("AnthropicTranslatorClient.isCreditExhaustion restored", AnthropicTranslatorClient.isCreditExhaustion(400, """{"error":{"message":"Your credit balance is too low"}}"""))
+
+    val capturedAnthropicProxy = AtomicReference<String>("")
+    val mockAnthropicProxy = OkHttpClient.Builder().addInterceptor { chain ->
+        val buf = Buffer()
+        chain.request().body?.writeTo(buf)
+        capturedAnthropicProxy.set(buf.readUtf8())
+        val respJson = """{"content":[{"type":"text","text":"{\"id\":1,\"text\":\"Chào anh\"}]"}]}"""
+        Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+            .body(respJson.toResponseBody("application/json".toMediaType())).build()
+    }.build()
+    val anthProxyRes = AnthropicTranslatorClient("ant-key", baseUrl = "https://proxy.example.com", httpClient = mockAnthropicProxy)
+        .translateChunk(listOf(SubtitleCue(index = 1, startMs = 0L, endMs = 1000L, rawText = "Hi")), targetLang = "vi")
+    assertTrue("Anthropic custom proxy plain string system & ] continuation parses", anthProxyRes.isSuccess && anthProxyRes.translations[1] == "Chào anh")
+    assertTrue("Anthropic custom proxy sends plain string system", mapper.readTree(capturedAnthropicProxy.get()).get("system")?.isTextual == true)
+
+    // 14.4 0ms Cancellable OkHttp socket interruption via suspendCancellableCoroutine
+    val serverSocket = ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
+    val acceptedLatch = CountDownLatch(1)
+    val serverThread = Thread {
+        try {
+            val sock = serverSocket.accept()
+            acceptedLatch.countDown()
+            Thread.sleep(5000)
+            sock.close()
+        } catch (_: Throwable) {}
+    }.apply { isDaemon = true; start() }
+
+    val longTimeoutClient = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .callTimeout(75, TimeUnit.SECONDS)
+        .build()
+    val cancellableGemini = GeminiTranslatorClient(
+        apiKey = "k",
+        baseUrl = "http://127.0.0.1:${serverSocket.localPort}",
+        httpClient = longTimeoutClient
+    )
+    val sawCancellation = AtomicBoolean(false)
+    val job = launch(kotlinx.coroutines.Dispatchers.IO) {
+        try {
+            cancellableGemini.translateChunk(listOf(SubtitleCue(index = 1, startMs = 0L, endMs = 1000L, rawText = "Hold socket")), targetLang = "vi")
+        } catch (ce: CancellationException) {
+            sawCancellation.set(true)
+            throw ce
+        }
+    }
+    var waitedMs = 0L
+    while (!acceptedLatch.await(10, TimeUnit.MILLISECONDS) && waitedMs < 3000L) {
+        delay(10)
+        waitedMs += 10
+    }
+    assertTrue("Mock server accepted socket connection before cancel", acceptedLatch.count == 0L)
+    delay(40)
+    val tCancelStart = System.currentTimeMillis()
+    job.cancelAndJoin()
+    val cancelElapsed = System.currentTimeMillis() - tCancelStart
+    try { serverSocket.close() } catch (_: Throwable) {}
+    serverThread.interrupt()
+    assertTrue("0ms OkHttp cancellation completed rapidly (< 500ms, took ${cancelElapsed}ms)", cancelElapsed < 500L)
+    assertTrue("CancellationException propagated cleanly without being swallowed", sawCancellation.get())
+
+    // 14.4b OkHttp callTimeout returns null / retryable TranslationResult (NOT CancellationException) + null content handling
+    val timeoutSocket = ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
+    val timeoutServerThread = Thread {
+        while (!timeoutSocket.isClosed) {
+            try {
+                val sock = timeoutSocket.accept()
+                Thread {
+                    try {
+                        Thread.sleep(5000)
+                        sock.close()
+                    } catch (_: Throwable) {}
+                }.apply { isDaemon = true; start() }
+            } catch (_: Throwable) {
+                break
+            }
+        }
+    }.apply { isDaemon = true; start() }
+    val stalledBaseUrl = "http://127.0.0.1:${timeoutSocket.localPort}"
+
+    var gemTimeoutThrewCancel = false
+    val gemTimeoutRes = try {
+        GeminiTranslatorClient("k", baseUrl = stalledBaseUrl).generateJsonPrompt("sys", "usr", timeoutSeconds = 1L)
+    } catch (_: CancellationException) {
+        gemTimeoutThrewCancel = true
+        "THREW"
+    }
+    assertTrue("Gemini generateJsonPrompt callTimeout returns null without CancellationException", !gemTimeoutThrewCancel && gemTimeoutRes == null)
+
+    var oaiTimeoutThrewCancel = false
+    val oaiTimeoutRes = try {
+        OpenAITranslatorClient("sk", baseUrl = stalledBaseUrl).generateJsonPrompt("sys", "usr", timeoutSeconds = 1L)
+    } catch (_: CancellationException) {
+        oaiTimeoutThrewCancel = true
+        "THREW"
+    }
+    assertTrue("OpenAI generateJsonPrompt callTimeout returns null without CancellationException", !oaiTimeoutThrewCancel && oaiTimeoutRes == null)
+
+    var anthTimeoutThrewCancel = false
+    val anthTimeoutRes = try {
+        AnthropicTranslatorClient("ant", baseUrl = stalledBaseUrl).generateJsonPrompt("sys", "usr", timeoutSeconds = 1L)
+    } catch (_: CancellationException) {
+        anthTimeoutThrewCancel = true
+        "THREW"
+    }
+    assertTrue("Anthropic generateJsonPrompt callTimeout returns null without CancellationException", !anthTimeoutThrewCancel && anthTimeoutRes == null)
+
+    val shortCallClient = OkHttpClient.Builder()
+        .connectTimeout(1, TimeUnit.SECONDS)
+        .readTimeout(2, TimeUnit.SECONDS)
+        .callTimeout(1, TimeUnit.SECONDS)
+        .build()
+    var gemChunkThrewCancel = false
+    val gemChunkTimeoutRes = try {
+        GeminiTranslatorClient("k", baseUrl = stalledBaseUrl, httpClient = shortCallClient)
+            .translateChunk(listOf(SubtitleCue(index = 1, startMs = 0L, endMs = 1000L, rawText = "Timeout test")), targetLang = "vi")
+    } catch (_: CancellationException) {
+        gemChunkThrewCancel = true
+        null
+    }
+    try { timeoutSocket.close() } catch (_: Throwable) {}
+    timeoutServerThread.interrupt()
+    assertTrue(
+        "Gemini translateChunk callTimeout returns success=false, retryable=true without CancellationException",
+        !gemChunkThrewCancel && gemChunkTimeoutRes != null && !gemChunkTimeoutRes.isSuccess && gemChunkTimeoutRes.retryable
+    )
+
+    val openAiNullContentClient = OkHttpClient.Builder().addInterceptor { chain ->
+        val respJson = """{"choices":[{"message":{"content":null,"refusal":"Sorry"}}]}"""
+        Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+            .body(respJson.toResponseBody("application/json".toMediaType())).build()
+    }.build()
+    val oaiNullContentOut = OpenAITranslatorClient("sk", httpClient = openAiNullContentClient)
+        .generateJsonPrompt("sys", "usr", timeoutSeconds = 5L)
+    assertEquals("OpenAI generateJsonPrompt on content:null returns null", null, oaiNullContentOut)
+
+    val anthropicNullTextClient = OkHttpClient.Builder().addInterceptor { chain ->
+        val respJson = """{"content":[{"type":"text","text":null}]}"""
+        Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+            .body(respJson.toResponseBody("application/json".toMediaType())).build()
+    }.build()
+    val anthNullTextOut = AnthropicTranslatorClient("ant", httpClient = anthropicNullTextClient)
+        .generateJsonPrompt("sys", "usr", timeoutSeconds = 5L)
+    assertEquals("Anthropic generateJsonPrompt on text:null returns null", null, anthNullTextOut)
+
+    val geminiEmptyCandidatesClient = OkHttpClient.Builder().addInterceptor { chain ->
+        val respJson = """{"candidates":[]}"""
+        Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+            .body(respJson.toResponseBody("application/json".toMediaType())).build()
+    }.build()
+    val gemEmptyClient = GeminiTranslatorClient("gem", httpClient = geminiEmptyCandidatesClient)
+    val gemEmptyPromptOut = gemEmptyClient.generateJsonPrompt("sys", "usr", timeoutSeconds = 5L)
+    assertEquals("Gemini generateJsonPrompt on candidates:[] returns null", null, gemEmptyPromptOut)
+    val gemEmptyChunkOut = gemEmptyClient.translateChunk(
+        listOf(SubtitleCue(index = 1, startMs = 0L, endMs = 1000L, rawText = "Hello")),
+        targetLang = "vi"
+    )
+    assertTrue(
+        "Gemini translateChunk on candidates:[] yields empty translations without rawResponse=null or envelope",
+        gemEmptyChunkOut.translations.isEmpty() && gemEmptyChunkOut.rawResponse == "" && gemEmptyChunkOut.rawResponse != "null"
+    )
+
+    val geminiNullTextClient = OkHttpClient.Builder().addInterceptor { chain ->
+        val respJson = """{"candidates":[{"content":{"parts":[{"text":null}]}}]}"""
+        Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+            .body(respJson.toResponseBody("application/json".toMediaType())).build()
+    }.build()
+    val gemNullTextClient = GeminiTranslatorClient("gem", httpClient = geminiNullTextClient)
+    val gemNullTextPromptOut = gemNullTextClient.generateJsonPrompt("sys", "usr", timeoutSeconds = 5L)
+    assertEquals("Gemini generateJsonPrompt on parts[].text:null returns null", null, gemNullTextPromptOut)
+    val gemNullTextChunkOut = gemNullTextClient.translateChunk(
+        listOf(SubtitleCue(index = 1, startMs = 0L, endMs = 1000L, rawText = "Hello")),
+        targetLang = "vi"
+    )
+    assertTrue(
+        "Gemini translateChunk on parts[].text:null yields empty translations without rawResponse=null",
+        gemNullTextChunkOut.translations.isEmpty() && gemNullTextChunkOut.rawResponse == "" && gemNullTextChunkOut.rawResponse != "null"
+    )
+
+    // 14.5 PacingGovernor highSpeedMode = true bypasses delay
+    val fastGov = PacingGovernor(minIntervalMs = 5000L, highSpeedMode = true)
+    val tf0 = PacingGovernor.getMonotonicTimeMs()
+    fastGov.pace()
+    fastGov.pace()
+    val tf1 = PacingGovernor.getMonotonicTimeMs()
+    assertTrue("PacingGovernor highSpeedMode bypasses 5000ms pacing (${tf1 - tf0}ms)", (tf1 - tf0) < 200L)
+
+    // 14.6 AITranslationParser.parseFilmBible + truncated JSON safety invariant
+    val filmBibleRaw = """
+        Here is the film bible:
+        ```json
+        {
+          "characters": [
+            {"name": "Charlie Kenton", "aliases": ["Charlie"], "gender": "male", "age_group": "adult", "role": "Former boxer"},
+            {"name": "Max Kenton", "aliases": ["Max"], "gender": "male", "age_group": "child", "role": "Charlie's son"}
+          ],
+          "relationships": [
+            {"pair": ["Charlie Kenton", "Max Kenton"], "type": "family", "address_matrix": {"vi": {"Charlie_to_Max": "bố - con"}}}
+          ],
+          "auto_glossary": {"shadow-box": "đấm gió", "sparring bot": "robot tập đấu"},
+          "tone_guide": "Gritty sports father-son drama"
+        }
+        ```
+    """.trimIndent()
+    val parsedBible = AITranslationParser.parseFilmBible(filmBibleRaw)
+    assertTrue("parseFilmBible extracted 2 characters & 1 relationship", parsedBible != null && parsedBible.characters.size == 2 && parsedBible.relationships.size == 1)
+    assertEquals("parseFilmBible auto_glossary", "đấm gió", parsedBible?.autoGlossary?.get("shadow-box"))
+    assertEquals("parseFilmBible tone_guide", "Gritty sports father-son drama", parsedBible?.toneGuide)
+    val bibleReg = parsedBible!!.toRegistry("Real Steel")
+    assertEquals("GlobalFilmBible.toRegistry mediaTitle", "Real Steel", bibleReg.mediaTitle)
+    assertTrue("Truncated JSON still returns emptyMap()", AITranslationParser.parseTranslations("""[{"id": 1, "text": "Incomplete""").isEmpty())
+
+    val proseBracesFilmBible = """
+        Using template {characters, relationships}:
+        {"characters":[{"name":"Charlie Kenton","gender":"male"}],"tone_guide":"Gritty drama"}
+    """.trimIndent()
+    val parsedProseBraces = AITranslationParser.parseFilmBible(proseBracesFilmBible)
+    assertTrue(
+        "parseFilmBible parses JSON preceded by prose containing {braces}",
+        parsedProseBraces != null && parsedProseBraces.characters.firstOrNull()?.name == "Charlie Kenton" && parsedProseBraces.toneGuide == "Gritty drama"
+    )
+
+    val emptyNullBible = AITranslationParser.parseFilmBible("""{"characters":[],"relationships":[],"auto_glossary":{},"tone_guide":null}""")
+    assertEquals("parseFilmBible with empty fields and tone_guide:null returns null", null, emptyNullBible)
+
+    val nullFieldsBible = AITranslationParser.parseFilmBible(
+        """{"characters":[{"name":"Max","aliases":[null,"M"],"gender":null,"age_group":null,"role":null},{"name":null}],"relationships":[{"pair":[null,null],"type":null},{"pair":["Charlie","Max"],"type":null,"address_matrix":{"vi":{"Charlie_to_Max":"bố - con","bad":null}}}],"auto_glossary":{"term":null,"ring":"sàn đấu"},"tone_guide":null}"""
+    )
+    assertTrue("parseFilmBible preserves defaults & ignores null entries", nullFieldsBible != null &&
+        nullFieldsBible.characters.size == 1 &&
+        nullFieldsBible.characters[0].name == "Max" &&
+        nullFieldsBible.characters[0].aliases == listOf("M") &&
+        nullFieldsBible.characters[0].gender == "unknown" &&
+        nullFieldsBible.characters[0].ageGroup == "adult" &&
+        nullFieldsBible.characters[0].role == "" &&
+        nullFieldsBible.relationships.size == 1 &&
+        nullFieldsBible.relationships[0].pair == listOf("Charlie", "Max") &&
+        nullFieldsBible.relationships[0].type == "peers" &&
+        nullFieldsBible.autoGlossary == mapOf("ring" to "sàn đấu") &&
+        nullFieldsBible.toneGuide == ""
+    )
+    val viMatrix = nullFieldsBible?.relationships?.get(0)?.addressMatrix?.get("vi") as? Map<*, *>
+    assertTrue("parseFilmBible addressMatrix ignores null entries", viMatrix != null && viMatrix["Charlie_to_Max"] == "bố - con" && !viMatrix.containsKey("bad"))
+
+    val parsedNullCue = AITranslationParser.parseTranslations("""{"translations":[{"id":1,"text":null},{"id":2,"text":"Chào"}]}""")
+    assertEquals("parseTranslations omits text:null cue instead of literal null", mapOf(2 to "Chào"), parsedNullCue)
+
     println("\n================================================================================")
-    println(">>> ALL 13 MILESTONE 2 TEST SUITES PASSED PERFECTLY!")
+    println(">>> ALL 14 MILESTONE 2 TEST SUITES PASSED PERFECTLY!")
     println("================================================================================")
 }

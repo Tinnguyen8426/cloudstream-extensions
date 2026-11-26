@@ -1,23 +1,22 @@
 package com.lagradost.cloudstream3.subtitles.ai.client
 
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
-import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
 import com.lagradost.cloudstream3.subtitles.ai.models.ContextCue
 import com.lagradost.cloudstream3.subtitles.ai.models.MediaContext
 import com.lagradost.cloudstream3.subtitles.ai.models.SubtitleCue
 import com.lagradost.cloudstream3.subtitles.ai.models.TranslationResult
 import com.lagradost.cloudstream3.subtitles.ai.models.TwoTierCharacterRegistry
 import com.lagradost.cloudstream3.subtitles.ai.parser.AITranslationParser
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 
 /**
  * AI subtitle translation client for Google AI Studio (Gemini REST API v1beta).
@@ -26,9 +25,10 @@ import java.util.concurrent.TimeUnit
  * 1. Endpoint construction with prefix stripping to eliminate `models/models/...` 404 defects.
  * 2. Header-based authentication via `x-goog-api-key`.
  * 3. Permissive safety settings (`BLOCK_NONE`) across all 4 categories to prevent movie subtitle drops.
- * 4. Dual structured schemas: Bootstrap schema (Chunk 0) vs TranslationsOnly schema (Chunks 1..N).
- * 5. 15 RPM rate limit vs 24-hour daily quota decoupling with exponential backoff and jitter.
- * 6. Null-safe candidate extraction from `candidates[0].content.parts[0].text`.
+ * 4. Unified lean structured output schema `{"translations":[{"id":<int>,"text":"<string>"}]}` with
+ *    default `thinkingConfig` preserved and `"thought": true` parts filtered out.
+ * 5. Single-attempt execution with 0ms cancellable OkHttp calls and 15 RPM vs daily quota decoupling.
+ * 6. Pass 0 lightweight JSON prompt execution via `generateJsonPrompt`.
  */
 class GeminiTranslatorClient(
     val apiKey: String,
@@ -41,15 +41,7 @@ class GeminiTranslatorClient(
     private val mapper: ObjectMapper = ObjectMapper().registerKotlinModule()
 
     private val client: OkHttpClient by lazy {
-        httpClient ?: try {
-            com.lagradost.cloudstream3.app.baseClient
-        } catch (_: Throwable) {
-            OkHttpClient.Builder()
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
-                .writeTimeout(20, TimeUnit.SECONDS)
-                .build()
-        }
+        buildAiOkHttpClient(httpClient)
     }
 
     override suspend fun translateChunk(
@@ -57,7 +49,7 @@ class GeminiTranslatorClient(
         sourceLang: String?,
         targetLang: String,
         customGlossary: String?
-    ): TranslationResult = translateChunk(
+    ): TranslationResult = translateChunkWithSceneDigest(
         cues = cues,
         sourceLang = sourceLang,
         targetLang = targetLang,
@@ -65,7 +57,8 @@ class GeminiTranslatorClient(
         lookbehind = emptyList(),
         lookahead = emptyList(),
         characterRegistry = null,
-        mediaContext = null
+        mediaContext = null,
+        rollingSceneDigest = null
     )
 
     override suspend fun translateChunk(
@@ -77,6 +70,28 @@ class GeminiTranslatorClient(
         lookahead: List<ContextCue>,
         characterRegistry: TwoTierCharacterRegistry?,
         mediaContext: MediaContext?
+    ): TranslationResult = translateChunkWithSceneDigest(
+        cues = cues,
+        sourceLang = sourceLang,
+        targetLang = targetLang,
+        customGlossary = customGlossary,
+        lookbehind = lookbehind,
+        lookahead = lookahead,
+        characterRegistry = characterRegistry,
+        mediaContext = mediaContext,
+        rollingSceneDigest = null
+    )
+
+    override suspend fun translateChunkWithSceneDigest(
+        cues: List<SubtitleCue>,
+        sourceLang: String?,
+        targetLang: String,
+        customGlossary: String?,
+        lookbehind: List<ContextCue>,
+        lookahead: List<ContextCue>,
+        characterRegistry: TwoTierCharacterRegistry?,
+        mediaContext: MediaContext?,
+        rollingSceneDigest: String?
     ): TranslationResult = withContext(Dispatchers.IO) {
         if (cues.isEmpty()) {
             return@withContext TranslationResult(emptyMap(), null, true)
@@ -85,8 +100,6 @@ class GeminiTranslatorClient(
         pacingGovernor?.pace()
 
         val endpointUrl = buildGeminiUrl(baseUrl, modelName)
-        val isBootstrap = AITranslatorPromptBuilder.isBootstrap(lookbehind, characterRegistry)
-        val includeDiscoveredCharacters = isBootstrap && TranslatorConfig.enableCharacterProfiling
         val sampleText = cues.firstOrNull()?.rawText ?: ""
         val systemInstruction = AITranslatorPromptBuilder.buildSystemPrompt(
             targetLang = targetLang,
@@ -96,61 +109,32 @@ class GeminiTranslatorClient(
             sourceLang = sourceLang,
             sampleText = sampleText
         )
-        val userContentJson = AITranslatorPromptBuilder.buildUserPayload(cues, lookbehind, lookahead)
+        val userContentJson = AITranslatorPromptBuilder.buildUserPayload(
+            cues = cues,
+            lookbehind = lookbehind,
+            lookahead = lookahead,
+            rollingSceneDigest = rollingSceneDigest
+        )
 
-        val responseSchema = if (includeDiscoveredCharacters) {
-            mapOf(
-                "type" to "OBJECT",
-                "properties" to mapOf(
-                    "translations" to mapOf(
-                        "type" to "ARRAY",
-                        "items" to mapOf(
-                            "type" to "OBJECT",
-                            "properties" to linkedMapOf(
-                                "id" to mapOf("type" to "INTEGER"),
-                                "act" to mapOf("type" to "STRING", "enum" to listOf("dialogue", "monologue")),
-                                "role" to mapOf("type" to "STRING", "enum" to listOf("senior", "junior", "peer", "solo")),
-                                "text" to mapOf("type" to "STRING")
-                            ),
-                            "required" to listOf("id", "act", "role", "text")
-                        )
-                    ),
-                    "discovered_characters" to mapOf(
-                        "type" to "ARRAY",
-                        "items" to mapOf(
-                            "type" to "OBJECT",
-                            "properties" to mapOf(
-                                "name" to mapOf("type" to "STRING"),
-                                "gender" to mapOf("type" to "STRING"),
-                                "role" to mapOf("type" to "STRING")
-                            ),
-                            "required" to listOf("name", "gender", "role")
-                        )
+        val responseSchema = mapOf(
+            "type" to "OBJECT",
+            "properties" to mapOf(
+                "translations" to mapOf(
+                    "type" to "ARRAY",
+                    "items" to mapOf(
+                        "type" to "OBJECT",
+                        "properties" to linkedMapOf(
+                            "id" to mapOf("type" to "INTEGER"),
+                            "text" to mapOf("type" to "STRING")
+                        ),
+                        "required" to listOf("id", "text")
                     )
-                ),
-                "required" to listOf("translations")
-            )
-        } else {
-            mapOf(
-                "type" to "OBJECT",
-                "properties" to mapOf(
-                    "translations" to mapOf(
-                        "type" to "ARRAY",
-                        "items" to mapOf(
-                            "type" to "OBJECT",
-                            "properties" to linkedMapOf(
-                                "id" to mapOf("type" to "INTEGER"),
-                                "text" to mapOf("type" to "STRING")
-                            ),
-                            "required" to listOf("id", "text")
-                        )
-                    )
-                ),
-                "required" to listOf("translations")
-            )
-        }
+                )
+            ),
+            "required" to listOf("translations")
+        )
 
-        // Native Gemini REST v1beta payload
+        // Native Gemini REST v1beta payload (thinkingConfig omitted intentionally to preserve model defaults)
         val requestMap = mapOf(
             "systemInstruction" to mapOf(
                 "parts" to listOf(mapOf("text" to systemInstruction))
@@ -170,7 +154,7 @@ class GeminiTranslatorClient(
             "generationConfig" to mapOf(
                 "temperature" to 0.3,
                 "topP" to 0.95,
-                "maxOutputTokens" to 4096,
+                "maxOutputTokens" to 8192,
                 "responseMimeType" to "application/json",
                 "responseSchema" to responseSchema
             )
@@ -188,82 +172,137 @@ class GeminiTranslatorClient(
             reqBuilder.header("x-goog-api-key", apiKey.trim())
         }
 
-        val maxAttempts = 2
-        var lastError = "Unknown Gemini error"
+        try {
+            val response = executeCancellableCall(client, reqBuilder.build())
+            val code = response.code
+            val responseBody = response.body
 
-        for (attempt in 0 until maxAttempts) {
-            try {
-                client.newCall(reqBuilder.build()).execute().use { response ->
-                    val code = response.code
-                    val responseBody = response.body?.string() ?: ""
-
-                    if (response.isSuccessful) {
-                        val root = mapper.readTree(responseBody)
-                        val text = root.get("candidates")?.get(0)?.get("content")?.get("parts")?.get(0)?.get("text")?.asText() ?: responseBody
-                        val translations = AITranslationParser.parseTranslations(text)
-                        val discovered = if (includeDiscoveredCharacters) AITranslationParser.parseDiscoveredCharacters(text) else null
-                        return@withContext TranslationResult(
-                            translations = translations,
-                            rawResponse = text,
-                            success = true,
-                            discoveredCharacters = discovered
-                        )
-                    }
-
-                    // Handle 429 Rate Limiting vs Daily Quota Decoupling
-                    if (code == 429) {
-                        if (isDailyQuotaError(code, responseBody)) {
-                            // Hard daily quota ban: circuit breaker
-                            return@withContext TranslationResult(
-                                success = false,
-                                error = "Gemini Daily Quota Exhausted: $responseBody",
-                                isQuotaExhausted = true,
-                                retryable = false
-                            )
-                        }
-
-                        // Transient 15 RPM rate limit: exponential backoff with full jitter
-                        lastError = "Gemini 15 RPM rate limit exceeded: $responseBody"
-                        if (attempt < maxAttempts - 1) {
-                            val backoff = calculateBackoffMs(attempt)
-                            delay(backoff)
-                            // Continue loop to retry
-                        }
-                    } else if (code == 400 && responseBody.contains("API_KEY_INVALID", ignoreCase = true)) {
-                        return@withContext TranslationResult(
-                            success = false,
-                            error = "Gemini Invalid API Key: $responseBody",
-                            isQuotaExhausted = true,
-                            retryable = false
-                        )
-                    } else if (code in 500..599) {
-                        lastError = "Gemini Server Error ($code): $responseBody"
-                        if (attempt < maxAttempts - 1) {
-                            delay(2000L * (attempt + 1))
-                        }
-                    } else {
-                        return@withContext TranslationResult(
-                            success = false,
-                            error = "Gemini API Error ($code): $responseBody",
-                            isQuotaExhausted = false,
-                            retryable = false
-                        )
-                    }
-                }
-            } catch (e: Throwable) {
-                lastError = "Gemini Connection Exception: ${e.message}"
-                if (attempt < maxAttempts - 1) {
-                    delay(2000L * (attempt + 1))
-                }
+            if (response.isSuccessful) {
+                val root = mapper.readTree(responseBody)
+                val text = extractNonThoughtText(root, responseBody)
+                val translations = AITranslationParser.parseTranslations(text)
+                return@withContext TranslationResult(
+                    translations = translations,
+                    rawResponse = text,
+                    success = true,
+                    discoveredCharacters = null
+                )
             }
+
+            if (code == 429) {
+                if (isDailyQuotaError(code, responseBody)) {
+                    return@withContext TranslationResult(
+                        success = false,
+                        error = "Gemini Daily Quota Exhausted: $responseBody",
+                        isQuotaExhausted = true,
+                        retryable = false
+                    )
+                }
+                return@withContext TranslationResult(
+                    success = false,
+                    error = "Gemini 15 RPM rate limit exceeded: $responseBody",
+                    isQuotaExhausted = false,
+                    retryable = true
+                )
+            } else if (code == 400 && responseBody.contains("API_KEY_INVALID", ignoreCase = true)) {
+                return@withContext TranslationResult(
+                    success = false,
+                    error = "Gemini Invalid API Key: $responseBody",
+                    isQuotaExhausted = true,
+                    retryable = false
+                )
+            } else if (code in 500..599) {
+                return@withContext TranslationResult(
+                    success = false,
+                    error = "Gemini Server Error ($code): $responseBody",
+                    isQuotaExhausted = false,
+                    retryable = true
+                )
+            } else {
+                return@withContext TranslationResult(
+                    success = false,
+                    error = "Gemini API Error ($code): $responseBody",
+                    isQuotaExhausted = false,
+                    retryable = false
+                )
+            }
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            TranslationResult(
+                success = false,
+                error = "Gemini Connection Exception: ${e.message}",
+                isQuotaExhausted = false,
+                retryable = true
+            )
+        }
+    }
+
+    override suspend fun generateJsonPrompt(
+        systemPrompt: String,
+        userPrompt: String,
+        timeoutSeconds: Long
+    ): String? = withContext(Dispatchers.IO) {
+        pacingGovernor?.pace()
+
+        val endpointUrl = buildGeminiUrl(baseUrl, modelName)
+        val requestMap = mapOf(
+            "systemInstruction" to mapOf(
+                "parts" to listOf(mapOf("text" to systemPrompt))
+            ),
+            "contents" to listOf(
+                mapOf(
+                    "role" to "user",
+                    "parts" to listOf(mapOf("text" to userPrompt))
+                )
+            ),
+            "safetySettings" to listOf(
+                mapOf("category" to "HARM_CATEGORY_HARASSMENT", "threshold" to "BLOCK_NONE"),
+                mapOf("category" to "HARM_CATEGORY_HATE_SPEECH", "threshold" to "BLOCK_NONE"),
+                mapOf("category" to "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold" to "BLOCK_NONE"),
+                mapOf("category" to "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold" to "BLOCK_NONE")
+            ),
+            "generationConfig" to mapOf(
+                "temperature" to 0.2,
+                "maxOutputTokens" to 2048,
+                "responseMimeType" to "application/json"
+            )
+        )
+
+        val jsonBody = mapper.writeValueAsString(requestMap)
+        val requestBody = jsonBody.toRequestBody("application/json; charset=utf-8".toMediaType())
+        val reqBuilder = Request.Builder()
+            .url(endpointUrl)
+            .post(requestBody)
+            .header("Content-Type", "application/json; charset=utf-8")
+
+        if (apiKey.isNotBlank()) {
+            reqBuilder.header("x-goog-api-key", apiKey.trim())
         }
 
-        TranslationResult(
-            success = false,
-            error = lastError,
-            isQuotaExhausted = false,
-            retryable = true
-        )
+        try {
+            val response = executeCancellableCall(client.withShortTimeout(timeoutSeconds), reqBuilder.build())
+            if (!response.isSuccessful) return@withContext null
+            val root = mapper.readTree(response.body)
+            extractNonThoughtText(root, response.body).takeIf { it.isNotBlank() }
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            null
+        }
+    }
+
+    private fun extractNonThoughtText(root: JsonNode, fallback: String): String {
+        val partsNode = root.get("candidates")?.get(0)?.get("content")?.get("parts")
+        if (partsNode == null || !partsNode.isArray) {
+            return if (root.has("candidates")) "" else fallback
+        }
+        val sb = StringBuilder()
+        for (i in 0 until partsNode.size()) {
+            val part = partsNode.get(i) ?: continue
+            if (part.get("thought")?.asBoolean(false) == true) continue
+            val partText = part.get("text")?.takeIf { it.isTextual }?.asText()
+            if (!partText.isNullOrEmpty()) sb.append(partText)
+        }
+        return sb.toString()
     }
 
     override suspend fun ping(): TranslationResult {

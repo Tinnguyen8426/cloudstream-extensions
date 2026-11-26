@@ -1,8 +1,12 @@
 package com.lagradost.cloudstream3.subtitles.ai.profile
 
 import android.content.Context
+import com.fasterxml.jackson.annotation.JsonSetter
+import com.fasterxml.jackson.annotation.Nulls
+import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import com.fasterxml.jackson.module.kotlin.KotlinFeature
+import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.lagradost.cloudstream3.subtitles.ai.models.TwoTierCharacterRegistry
 import java.io.File
 import java.security.MessageDigest
@@ -22,7 +26,17 @@ object CharacterProfileManager {
     // Ephemeral RAM cache for episodic states (reset on episode transition)
     private val episodicStateCache = mutableMapOf<String, TwoTierCharacterRegistry>()
 
-    private val mapper: ObjectMapper = ObjectMapper().registerKotlinModule()
+    private val mapper: ObjectMapper = ObjectMapper().apply {
+        registerModule(
+            KotlinModule.Builder()
+                .enable(KotlinFeature.NullIsSameAsDefault)
+                .enable(KotlinFeature.NullToEmptyCollection)
+                .enable(KotlinFeature.NullToEmptyMap)
+                .build()
+        )
+        configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        setDefaultSetterInfo(JsonSetter.Value.forValueNulls(Nulls.SKIP))
+    }
 
     private fun hashKey(seriesTitle: String): String {
         val digest = MessageDigest.getInstance("SHA-256")

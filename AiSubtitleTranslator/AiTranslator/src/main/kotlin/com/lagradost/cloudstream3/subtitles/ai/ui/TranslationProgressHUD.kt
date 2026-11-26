@@ -45,7 +45,10 @@ object TranslationProgressHUD {
     private var progressBarRef: WeakReference<ProgressBar>? = null
     private var percentTextRef: WeakReference<TextView>? = null
     private var statusTextRef: WeakReference<TextView>? = null
+    private var cancelButtonRef: WeakReference<TextView>? = null
     private var dismissRunnable: Runnable? = null
+    @Volatile
+    private var onCancelCallback: (() -> Unit)? = null
 
     /**
      * Safely executes an action on the Android main UI thread with headless JVM fallback.
@@ -85,10 +88,12 @@ object TranslationProgressHUD {
         targetLang: String = "",
         totalChunks: Int = 0,
         totalCues: Int = 0,
-        initialStatus: String? = null
+        initialStatus: String? = null,
+        onCancel: (() -> Unit)? = null
     ) {
         try {
             if (!TranslatorConfig.showProgressHUD) return
+            onCancelCallback = onCancel
 
             val act = activity
                 ?: (context as? Activity)
@@ -102,6 +107,7 @@ object TranslationProgressHUD {
             runOnMainThread(act) {
                 try {
                     dismissInternal()
+                    onCancelCallback = onCancel
 
                     val decor = act.window?.decorView as? ViewGroup ?: return@runOnMainThread
                     val view = buildHudView(act, modelName, totalChunks, totalCues)
@@ -227,6 +233,7 @@ object TranslationProgressHUD {
                         text = message
                         setTextColor(COLOR_GREEN)
                     }
+                    cancelButtonRef?.get()?.visibility = View.GONE
                     scheduleAutoDismiss(3000L)
                 } catch (_: Throwable) {}
             }
@@ -263,6 +270,7 @@ object TranslationProgressHUD {
                             progressTintList = ColorStateList.valueOf(COLOR_RED)
                         } catch (_: Throwable) {}
                     }
+                    cancelButtonRef?.get()?.visibility = View.GONE
                     scheduleAutoDismiss(5000L)
                 } catch (_: Throwable) {}
             }
@@ -312,7 +320,9 @@ object TranslationProgressHUD {
             progressBarRef = null
             percentTextRef = null
             statusTextRef = null
+            cancelButtonRef = null
             activityRef = null
+            onCancelCallback = null
         }
     }
 
@@ -409,6 +419,43 @@ object TranslationProgressHUD {
         }
         headerRow.addView(percentView)
         percentTextRef = WeakReference(percentView)
+
+        val cancelButton = TextView(activity).apply {
+            text = "✕ Hủy dịch"
+            textSize = 11f
+            paint.isFakeBoldText = true
+            setTextColor(COLOR_TEXT_PRIMARY)
+            setPadding(pad8, pad4, pad8, pad4)
+            isClickable = true
+            isFocusable = false
+            isFocusableInTouchMode = false
+            try {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 12 * density
+                    setColor(0x66E57373)
+                    setStroke((1 * density).toInt().coerceAtLeast(1), COLOR_RED)
+                }
+            } catch (_: Throwable) {}
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginEnd = pad6
+            }
+            setOnClickListener {
+                isEnabled = false
+                statusTextRef?.get()?.text = "Đang hủy dịch..."
+                val cb = onCancelCallback
+                if (cb != null) {
+                    cb.invoke()
+                } else {
+                    dismiss()
+                }
+            }
+        }
+        headerRow.addView(cancelButton)
+        cancelButtonRef = WeakReference(cancelButton)
 
         val closeButton = TextView(activity).apply {
             text = "✕"

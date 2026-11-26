@@ -484,9 +484,9 @@ object AITranslatorSettingsDialog {
         }
         rootLayout.addView(profilingCheckBox)
 
-        addLabel("Kích thước cửa sổ trượt (Context Window Size: mặc định 6):")
+        addLabel("Kích thước cửa sổ trượt (Context Window Size: mặc định 12):")
         val contextWindowSizeInput = EditText(context).apply {
-            hint = "6"
+            hint = "12"
             setText(TranslatorConfig.contextWindowSize.toString())
             inputType = InputType.TYPE_CLASS_NUMBER
             textSize = 14f
@@ -502,14 +502,22 @@ object AITranslatorSettingsDialog {
         }
         rootLayout.addView(dynamicScenePauseMsInput)
 
-        addLabel("Trần cứng số câu mỗi chunk (Max Chunk Cues: mặc định 28):")
+        addLabel("Trần cứng số câu mỗi chunk (Max Chunk Cues: mặc định 45):")
         val maxChunkCuesInput = EditText(context).apply {
-            hint = "28"
+            hint = "45"
             setText(TranslatorConfig.maxChunkCues.toString())
             inputType = InputType.TYPE_CLASS_NUMBER
             textSize = 14f
         }
         rootLayout.addView(maxChunkCuesInput)
+
+        val highSpeedCheckBox = CheckBox(context).apply {
+            text = "Chế độ API tốc độ cao (Bỏ pacing / Song song phân cảnh độc lập)"
+            isChecked = TranslatorConfig.highSpeedMode
+            textSize = 13f
+            setPadding(0, pad4, 0, pad4)
+        }
+        rootLayout.addView(highSpeedCheckBox)
 
         val sdhCheckBox = CheckBox(context).apply {
             text = "Giữ & Dịch âm thanh mô tả SDH ([Music], (Laughs))"
@@ -596,15 +604,16 @@ object AITranslatorSettingsDialog {
 
             TranslatorConfig.enableCharacterProfiling = profilingCheckBox.isChecked
 
-            val rawWindowSize = contextWindowSizeInput.text?.toString()?.toIntOrNull() ?: 6
+            val rawWindowSize = contextWindowSizeInput.text?.toString()?.toIntOrNull() ?: 12
             TranslatorConfig.contextWindowSize = rawWindowSize.coerceIn(1, 20)
 
             val rawPauseMs = dynamicScenePauseMsInput.text?.toString()?.toLongOrNull() ?: 1800L
             TranslatorConfig.dynamicScenePauseMs = rawPauseMs.coerceIn(500L, 10000L)
 
-            val rawMaxCues = maxChunkCuesInput.text?.toString()?.toIntOrNull() ?: 28
+            val rawMaxCues = maxChunkCuesInput.text?.toString()?.toIntOrNull() ?: 45
             TranslatorConfig.maxChunkCues = rawMaxCues.coerceIn(10, 80)
 
+            TranslatorConfig.highSpeedMode = highSpeedCheckBox.isChecked
             TranslatorConfig.preserveSdh = sdhCheckBox.isChecked
             TranslatorConfig.showProgressHUD = hudCheckBox.isChecked
             TranslatorConfig.customGlossary = glossaryInput.text?.toString()?.trim() ?: ""

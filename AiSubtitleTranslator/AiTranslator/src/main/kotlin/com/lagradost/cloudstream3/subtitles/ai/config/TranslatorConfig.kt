@@ -46,10 +46,11 @@ object TranslatorConfig {
     @Volatile var customGlossary: String = ""
     @Volatile var deliveryStrategy: String = DELIVERY_STRATEGY_A
     @Volatile var enableCharacterProfiling: Boolean = true
-    @Volatile var contextWindowSize: Int = 6
+    @Volatile var contextWindowSize: Int = 12
     @Volatile var dynamicScenePauseMs: Long = 1800L
-    @Volatile var maxChunkCues: Int = 28
+    @Volatile var maxChunkCues: Int = 45
     @Volatile var showProgressHUD: Boolean = true
+    @Volatile var highSpeedMode: Boolean = false
 
     /**
      * Initializes configuration by loading saved values from Android SharedPreferences.
@@ -71,10 +72,11 @@ object TranslatorConfig {
             customGlossary = prefs.getString("key_custom_glossary", "") ?: ""
             deliveryStrategy = prefs.getString("key_delivery_strategy", DELIVERY_STRATEGY_A) ?: DELIVERY_STRATEGY_A
             enableCharacterProfiling = prefs.getBoolean("key_enable_profiling", true)
-            contextWindowSize = prefs.getInt("key_context_window_size", 6)
+            contextWindowSize = prefs.getInt("key_context_window_size", 12)
             dynamicScenePauseMs = prefs.getLong("key_dynamic_pause_ms", 1800L)
-            maxChunkCues = prefs.getInt("key_max_chunk_cues", 28)
+            maxChunkCues = prefs.getInt("key_max_chunk_cues", 45)
             showProgressHUD = prefs.getBoolean("key_show_progress_hud", true)
+            highSpeedMode = prefs.getBoolean("key_high_speed_mode", false)
         } catch (_: Throwable) {
             // Graceful fallback to default values if context or prefs are unavailable
         }
@@ -105,6 +107,7 @@ object TranslatorConfig {
                 putLong("key_dynamic_pause_ms", dynamicScenePauseMs)
                 putInt("key_max_chunk_cues", maxChunkCues)
                 putBoolean("key_show_progress_hud", showProgressHUD)
+                putBoolean("key_high_speed_mode", highSpeedMode)
                 apply()
             }
         } catch (_: Throwable) {}
@@ -151,10 +154,11 @@ object TranslatorConfig {
         customGlossary = ""
         deliveryStrategy = DELIVERY_STRATEGY_A
         enableCharacterProfiling = true
-        contextWindowSize = 6
+        contextWindowSize = 12
         dynamicScenePauseMs = 1800L
-        maxChunkCues = 28
+        maxChunkCues = 45
         showProgressHUD = true
+        highSpeedMode = false
 
         if (context != null) {
             save(context)

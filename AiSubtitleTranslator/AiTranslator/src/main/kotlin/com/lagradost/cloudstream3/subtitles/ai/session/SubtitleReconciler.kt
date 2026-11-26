@@ -64,39 +64,42 @@ object SubtitleReconciler {
         return null
     }
 
+    data class ReconcileResult(
+        val translations: Map<Int, String>,
+        val droppedCueIds: Set<Int>
+    )
+
     /**
      * Reconciles input cues with translated items, auto-detecting and healing relative 1..N indexing,
-     * and micro-healing omitted Japanese interjections.
-     *
-     * @param inputCues List of source subtitle cues in the chunk.
-     * @param translatedItems Map of cue ID to translated dialogue string from the AI model.
-     * @return Map of cue index to reconciled dialogue text (size == inputCues.size).
+     * micro-healing omitted Japanese interjections, and reporting any cues that had to fall back to rawText.
      */
-    fun autoHealingReconcile(
+    fun autoHealingReconcileDetailed(
         inputCues: List<SubtitleCue>,
         translatedItems: Map<Int, String>
-    ): Map<Int, String> {
-        if (inputCues.isEmpty()) return emptyMap()
+    ): ReconcileResult {
+        if (inputCues.isEmpty()) return ReconcileResult(emptyMap(), emptySet())
 
         val reconciled = LinkedHashMap<Int, String>(inputCues.size)
+        val droppedIds = LinkedHashSet<Int>()
         val minInputId = inputCues.minOfOrNull { it.index } ?: 1
         val transKeys = translatedItems.keys.sorted()
 
         // Auto-detect 1-based relative re-indexing:
-        // LLM output keys start at 1 and end <= inputCues.size,
-        // while the input chunk starts beyond the chunk size or does not match input IDs.
+        // Input chunk starts after 1, all returned keys fall within 1..inputCues.size,
+        // and either minInputId > inputCues.size or at least one returned key < minInputId
+        // (handles 1-based resets even when cue #1 is dropped, e.g. 2..40 on chunk 16..55).
         val isRelative = transKeys.isNotEmpty() &&
-                transKeys.first() == 1 &&
-                transKeys.last() <= inputCues.size &&
-                (minInputId > inputCues.size || (minInputId > 1 && !translatedItems.containsKey(minInputId)))
+                minInputId > 1 &&
+                transKeys.all { it in 1..inputCues.size } &&
+                (minInputId > inputCues.size || transKeys.any { it < minInputId })
 
         for ((offset, cue) in inputCues.withIndex()) {
-            // 1. Primary lookup by exact cue index
-            var text = translatedItems[cue.index]?.trim()
-
-            // 2. Secondary lookup by 1-based offset if relative re-indexing was detected
-            if (text.isNullOrBlank() && isRelative) {
-                text = translatedItems[offset + 1]?.trim()
+            // 1. Lookup by 1-based relative offset when relative re-indexing was detected,
+            //    otherwise by exact global cue index.
+            var text = if (isRelative) {
+                translatedItems[offset + 1]?.trim()
+            } else {
+                translatedItems[cue.index]?.trim()
             }
 
             // 3. Micro-healing: if translation is omitted or blank, attempt Japanese interjection recovery
@@ -108,11 +111,29 @@ object SubtitleReconciler {
             }
 
             // 4. Tertiary fallback to cue.rawText if translation is still omitted or blank
-            reconciled[cue.index] = if (!text.isNullOrBlank()) text else cue.rawText
+            if (!text.isNullOrBlank()) {
+                reconciled[cue.index] = text
+            } else {
+                droppedIds.add(cue.index)
+                reconciled[cue.index] = cue.rawText
+            }
         }
 
-        return reconciled
+        return ReconcileResult(reconciled, droppedIds)
     }
+
+    /**
+     * Reconciles input cues with translated items, auto-detecting and healing relative 1..N indexing,
+     * and micro-healing omitted Japanese interjections.
+     *
+     * @param inputCues List of source subtitle cues in the chunk.
+     * @param translatedItems Map of cue ID to translated dialogue string from the AI model.
+     * @return Map of cue index to reconciled dialogue text (size == inputCues.size).
+     */
+    fun autoHealingReconcile(
+        inputCues: List<SubtitleCue>,
+        translatedItems: Map<Int, String>
+    ): Map<Int, String> = autoHealingReconcileDetailed(inputCues, translatedItems).translations
 
     /**
      * Backward-compatible alias matching Section 3.5 naming specification.

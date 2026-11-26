@@ -9,7 +9,10 @@ import kotlinx.coroutines.sync.withLock
  * Enforces 4.0s interval (15 RPM) for Google Gemini Free Tier.
  * Uses a safe monotonic clock fallback for Android runtime and desktop JVM test environments.
  */
-class PacingGovernor(val minIntervalMs: Long = 4000L) {
+class PacingGovernor @JvmOverloads constructor(
+    val minIntervalMs: Long = 4000L,
+    @Volatile var highSpeedMode: Boolean = false
+) {
     private val mutex = Mutex()
     private var lastRequestTime: Long = 0L
 
@@ -24,7 +27,7 @@ class PacingGovernor(val minIntervalMs: Long = 4000L) {
     }
 
     suspend fun pace() {
-        if (minIntervalMs <= 0L) return
+        if (highSpeedMode || minIntervalMs <= 0L) return
         mutex.withLock {
             val now = getMonotonicTimeMs()
             val elapsed = now - lastRequestTime

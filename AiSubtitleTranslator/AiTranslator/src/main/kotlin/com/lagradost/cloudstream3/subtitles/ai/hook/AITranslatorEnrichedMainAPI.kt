@@ -14,12 +14,14 @@ import com.lagradost.cloudstream3.syncproviders.SyncIdName
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
 import com.lagradost.cloudstream3.subtitles.ai.models.MediaContext
-import com.lagradost.cloudstream3.subtitles.ai.server.AITranslatorLocalServer
 import com.lagradost.cloudstream3.subtitles.ai.session.AITranslationSession
 import com.lagradost.cloudstream3.subtitles.ai.session.SubtitlePriorityEvaluator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Interceptor
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Outermost Decorator for CloudStream MainAPI.
@@ -280,10 +282,11 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
         )
         activeSession = session
 
-        var candidateCount = 0
-        var preAnnounced = false
+        val candidateCount = AtomicInteger(0)
+        val firstNonBypassCandidate = AtomicReference<SubtitleFile?>(null)
+        val capturedLinks = CopyOnWriteArrayList<ExtractorLink>()
         val interceptingSubtitleCallback: (SubtitleFile) -> Unit = { subFile ->
-            candidateCount++
+            candidateCount.incrementAndGet()
             logI(TAG, "Intercepted subtitle from '${baseApi.name}': lang='${subFile.lang}', url='${subFile.url}'")
 
             // PATH 1: SYNCHRONOUS 0ms PASSTHROUGH TO PLAYER
@@ -293,28 +296,17 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
                 logW(TAG, "Player subtitle callback threw: ${t.message}")
             }
 
-            // PRE-ANNOUNCEMENT: Pre-announce [AI] Tiếng Việt on first candidate subtitle
-            if (!preAnnounced && !session.isTargetLanguageBypassed && !session.isCancelled) {
-                val score = SubtitlePriorityEvaluator.calculateScore(
-                    subFile = subFile,
-                    targetLang = session.targetLang,
-                    priorityMode = TranslatorConfig.sourcePriorityMode,
-                    customList = TranslatorConfig.getCustomPriorityLanguages()
-                )
-                if (score != SubtitlePriorityEvaluator.SCORE_BYPASS_TARGET_LANG) {
-                    preAnnounced = true
-                    try {
-                        val streamKey = session.sessionKey
-                        val streamUrl = AITranslatorLocalServer.getSubtitleUrl(streamKey)
-                        AITranslatorLocalServer.registerSession(streamKey, session)
-                        val targetDisplayName = AITranslationSession.getTargetLanguageDisplayName(session.targetLang)
-                        val preAnnounceLabel = "[AI] $targetDisplayName"
-                        logI(TAG, "Pre-announcing AI subtitle track: '$preAnnounceLabel' -> $streamUrl")
-                        subtitleCallback(SubtitleFile(lang = preAnnounceLabel, url = streamUrl))
-                    } catch (t: Throwable) {
-                        logW(TAG, "Pre-announcement failed: ${t.message}")
-                    }
-                }
+            // Record first non-target-lang candidate; pre-announcement waits until loadLinks settles
+            // (or post-debounce in processCandidate for async peer enrichers) so concurrent targetLang tracks
+            // bypass cleanly without emitting a ghost [AI] track.
+            val subScore = SubtitlePriorityEvaluator.calculateScore(
+                subFile = subFile,
+                targetLang = session.targetLang,
+                priorityMode = TranslatorConfig.sourcePriorityMode,
+                customList = TranslatorConfig.getCustomPriorityLanguages()
+            )
+            if (subScore != SubtitlePriorityEvaluator.SCORE_BYPASS_TARGET_LANG) {
+                firstNonBypassCandidate.compareAndSet(null, subFile)
             }
 
             // PATH 2: ASYNCHRONOUS CANDIDATE DISCOVERY & QUEUEING
@@ -325,19 +317,37 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
             }
         }
 
+        val wrappedVideoCallback: (ExtractorLink) -> Unit = { link ->
+            try {
+                callback(link)
+            } finally {
+                capturedLinks.add(link)
+                session.recordExtractorLink(link)
+            }
+        }
+
+        session.beginLoadLinksWindow()
         // CRASH BARRIER: Wrap inner provider invocation in try-catch
         val result = try {
-            baseApi.loadLinks(data, isCasting, interceptingSubtitleCallback, callback)
+            baseApi.loadLinks(data, isCasting, interceptingSubtitleCallback, wrappedVideoCallback)
         } catch (t: Throwable) {
             logE(TAG, "Inner provider crashed during loadLinks: ${t.message}", t)
             activeSession?.cancelSession()
             activeSession = null
             false
+        } finally {
+            session.endLoadLinksWindow()
         }
 
-        logI(TAG, "baseApi.loadLinks for '${baseApi.name}' finished (result=$result, candidateCount=$candidateCount)")
-        if (candidateCount == 0) {
-            logW(TAG, "Provider '${baseApi.name}' produced 0 subtitle candidates. For torrents, ensure external subtitle enrichers like StremioSubtitleEnricher are installed.")
+        val count = candidateCount.get()
+        logI(TAG, "baseApi.loadLinks for '${baseApi.name}' finished (result=$result, candidateCount=$count)")
+        val syncCandidate = firstNonBypassCandidate.get()
+        if (syncCandidate != null && !session.isCancelled && !session.isTargetLanguageBypassed) {
+            session.preAnnounceIfNeeded(syncCandidate)
+        }
+        if (count == 0 && !session.isCancelled && !session.isTargetLanguageBypassed) {
+            logI(TAG, "Provider '${baseApi.name}' produced 0 subtitle candidates. Launching source fallback discovery across ${capturedLinks.size} video links and core providers.")
+            session.launchSourceFallbackDiscovery(capturedLinks, MediaContextManager.currentImdbId)
         }
         return result
     }
@@ -367,17 +377,50 @@ object MediaContextManager {
     @Volatile
     var currentContext: MediaContext? = null
 
+    @Volatile
+    var currentImdbId: String? = null
+
     fun setContext(response: LoadResponse) {
-        val actorNames = try {
-            response.actors?.mapNotNull { it.actor.name } ?: emptyList()
+        val actorsList = try {
+            response.actors ?: emptyList()
         } catch (_: Throwable) {
             emptyList()
         }
+        val actorNames = actorsList.mapNotNull {
+            try { it.actor.name.takeIf { n -> n.isNotBlank() } } catch (_: Throwable) { null }
+        }
+        val charActors = LinkedHashMap<String, String>()
+        for (ad in actorsList) {
+            val actorName = try { ad.actor.name.trim() } catch (_: Throwable) { "" }
+            val roleName = try { ad.roleString?.trim().orEmpty() } catch (_: Throwable) { "" }
+            if (actorName.isNotEmpty() && roleName.isNotEmpty()) {
+                charActors[actorName] = roleName
+            }
+        }
+        val mediaTypeStr = try {
+            val t: TvType? = response.type
+            t?.name ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+        val mediaYear = try { response.year } catch (_: Throwable) { null }
+        val tagList = try { response.tags ?: emptyList() } catch (_: Throwable) { emptyList() }
+        currentImdbId = try {
+            val comp = LoadResponse.Companion
+            comp.javaClass.getMethod("getImdbId", LoadResponse::class.java).invoke(comp, response) as? String
+        } catch (_: Throwable) {
+            null
+        }
+
         currentContext = MediaContext(
             title = response.name,
             plot = response.plot ?: "",
             actors = actorNames,
-            tags = response.tags ?: emptyList()
+            tags = tagList,
+            mediaType = mediaTypeStr,
+            year = mediaYear,
+            genres = tagList,
+            characterActors = charActors
         )
     }
 
@@ -387,5 +430,6 @@ object MediaContextManager {
 
     fun clear() {
         currentContext = null
+        currentImdbId = null
     }
 }

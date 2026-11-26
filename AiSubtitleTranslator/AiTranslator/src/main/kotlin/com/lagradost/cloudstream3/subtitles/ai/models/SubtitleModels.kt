@@ -45,7 +45,8 @@ data class ContextCue(
     val sourceText: String,
     @JsonProperty("translatedText") @JsonAlias("translated", "translated_text")
     val translatedText: String? = null,
-    val endMs: Long = 0L
+    val endMs: Long = 0L,
+    val gapMs: Long = 0L
 )
 
 /**
@@ -102,8 +103,36 @@ data class TwoTierCharacterRegistry(
     @JsonProperty("mediaTitle") @JsonAlias("media_title")
     val mediaTitle: String = "",
     val characters: List<CharacterEntity> = emptyList(),
-    val relationships: List<CharacterRelationship> = emptyList()
+    val relationships: List<CharacterRelationship> = emptyList(),
+    @JsonProperty("autoGlossary") @JsonAlias("auto_glossary")
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    val autoGlossary: Map<String, String> = emptyMap(),
+    @JsonProperty("toneGuide") @JsonAlias("tone_guide")
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    val toneGuide: String = ""
 )
+
+/**
+ * Global Film Bible extracted in Pass 0 Pre-Scan across representative cues.
+ */
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class GlobalFilmBible(
+    val characters: List<CharacterEntity> = emptyList(),
+    val relationships: List<CharacterRelationship> = emptyList(),
+    @JsonProperty("autoGlossary") @JsonAlias("auto_glossary")
+    val autoGlossary: Map<String, String> = emptyMap(),
+    @JsonProperty("toneGuide") @JsonAlias("tone_guide")
+    val toneGuide: String = ""
+) {
+    fun toRegistry(mediaTitle: String): TwoTierCharacterRegistry =
+        TwoTierCharacterRegistry(
+            mediaTitle = mediaTitle,
+            characters = characters,
+            relationships = relationships,
+            autoGlossary = autoGlossary,
+            toneGuide = toneGuide
+        )
+}
 
 /**
  * High-level media metadata captured from CloudStream LoadResponse.
@@ -113,7 +142,11 @@ data class MediaContext(
     val title: String = "",
     val plot: String = "",
     val actors: List<String> = emptyList(),
-    val tags: List<String> = emptyList()
+    val tags: List<String> = emptyList(),
+    val mediaType: String = "",
+    val year: Int? = null,
+    val genres: List<String> = emptyList(),
+    val characterActors: Map<String, String> = emptyMap()
 )
 
 /**
