@@ -2,14 +2,14 @@
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/StremioSubEnricher.cs3",
         "status": 1,
-        "version": 4,
+        "version": 5,
         "name": "Stremio Subtitle Enricher",
         "internalName": "StremioSubEnricher",
         "authors": [
             "Stremio Subtitle Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề đa ngôn ngữ từ Kitsu, OpenSubtitles v3, SubSense (SubDL/AnimeTosho/YIFY/…) và Cinemeta vào CloudStream",
-        "fileSize": 77100,
+        "fileSize": 75902,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "en",
         "tvTypes": [
@@ -21,19 +21,19 @@
         ],
         "iconUrl": "https://stremio.com/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-8322fca903aa711dc648e2145d2685f819893237afdf1f9340d04b89c784c04c"
+        "fileHash": "sha256-60e59387196fbf1e47b3b18012cbbd6bb62997483dbbe5c62c86d51388f80ed6"
     },
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/KitsunekkoEnricher.cs3",
         "status": 1,
-        "version": 3,
+        "version": 4,
         "name": "Kitsunekko Japanese Subtitle Enricher",
         "internalName": "KitsunekkoEnricher",
         "authors": [
             "Kitsunekko Japanese Subtitle Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề tiếng Nhật (.ass, .srt, .zip) từ Kitsunekko vào CloudStream",
-        "fileSize": 82517,
+        "fileSize": 81517,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "ja",
         "tvTypes": [
@@ -43,19 +43,19 @@
         ],
         "iconUrl": "https://kitsunekko.net/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-0b55ca146ea2af73de877cb6073722af4c2ca0e7dd25b6ae023f1e1590447dc1"
+        "fileHash": "sha256-d25e64bb8658dad658ae136152b3a1bc62c0081d71c17d77fb271e4d3e15074d"
     },
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/Anime47Enricher.cs3",
         "status": 1,
-        "version": 5,
+        "version": 6,
         "name": "Anime47 Subtitle Enricher",
         "internalName": "Anime47Enricher",
         "authors": [
             "Anime47 Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề Tiếng Việt (softsub) từ Anime47 vào CloudStream (tương thích hoàn hảo với Torrentio, TorraStream, StremioX, AnimePahe...)",
-        "fileSize": 63424,
+        "fileSize": 62231,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "vi",
         "tvTypes": [
@@ -65,19 +65,19 @@
         ],
         "iconUrl": "https://anime47.best/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-736cb9bade8afbe2a97214cbadecbf59ba75a3b838905d1f2acc381e36671cc8"
+        "fileHash": "sha256-2f528f2cc0211ed2b46f4cde9244eb83183037ee6619e600e1d10a1568c29a4a"
     },
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/AiSubtitleTranslator.cs3",
         "status": 1,
-        "version": 16,
+        "version": 17,
         "name": "AI Subtitle Translator",
         "internalName": "AiSubtitleTranslator",
         "authors": [
             "AI Subtitle Translator"
         ],
         "description": "Dịch phụ đề phim tự động bằng AI (Gemini, OpenAI, Claude) trực tiếp trên CloudStream với độ trễ 0ms và hỗ trợ xử lý ngữ cảnh đa ngôn ngữ",
-        "fileSize": 267283,
+        "fileSize": 266211,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "vi",
         "tvTypes": [
@@ -91,6 +91,6 @@
         ],
         "iconUrl": "https://translate.google.com/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-ea083316b19149bc0fa5fa57a5039a94c7b6b6e0463ed9f61be73545243ab0fa"
+        "fileHash": "sha256-a22fdafeb8e764602b141d80241056eb157c27bd12e61d302b7fd2a9378e905e"
     }
 ]
