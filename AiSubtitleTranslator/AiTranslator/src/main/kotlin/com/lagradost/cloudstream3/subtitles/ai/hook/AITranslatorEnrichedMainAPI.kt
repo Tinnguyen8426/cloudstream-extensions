@@ -1,13 +1,16 @@
 package com.lagradost.cloudstream3.subtitles.ai.hook
 
 import android.util.Log
+import com.lagradost.cloudstream3.AnimeLoadResponse
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.MovieLoadResponse
 import com.lagradost.cloudstream3.ProviderType
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.TvSeriesLoadResponse
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.VPNStatus
 import com.lagradost.cloudstream3.syncproviders.SyncIdName
@@ -15,10 +18,12 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
 import com.lagradost.cloudstream3.subtitles.ai.models.MediaContext
 import com.lagradost.cloudstream3.subtitles.ai.session.AITranslationSession
-import com.lagradost.cloudstream3.subtitles.ai.session.SubtitlePriorityEvaluator
+import com.lagradost.cloudstream3.subtitles.ai.ui.ManualTranslationButton
+import com.lagradost.cloudstream3.subtitles.ai.ui.PlayerSubtitleBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Interceptor
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -273,17 +278,62 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
         activeSession?.cancelSession()
 
         val ctx = TranslatorConfig.appContext ?: AITranslatorHook.appContext
+        val isManualMode = TranslatorConfig.translationMode == TranslatorConfig.MODE_MANUAL
+
+        val onInterimTrack: (SubtitleFile) -> Unit = { sf ->
+            try {
+                logI(TAG, "Interim AI track auto-switch: '${sf.lang}' -> ${sf.url}")
+                PlayerSubtitleBridge.addAndPrefer(sf)
+            } catch (t: Throwable) {
+                logW(TAG, "Interim track switch failed: ${t.message}")
+            }
+        }
+        val onFinalTrack: (SubtitleFile) -> Unit = { sf ->
+            try {
+                if (isManualMode || PlayerSubtitleBridge.isPreferredOwnAiTrack()) {
+                    logI(TAG, "Final track auto-switch (manual=$isManualMode): '${sf.lang}'")
+                    PlayerSubtitleBridge.addAndPrefer(sf)
+                } else {
+                    logI(TAG, "Final track emitted without auto-switch (viewer on a non-AI track).")
+                }
+            } catch (t: Throwable) {
+                logW(TAG, "Final track switch failed: ${t.message}")
+            }
+        }
+
         val session = AITranslationSession(
             mediaPayload = data,
             targetLang = TranslatorConfig.targetLanguage,
             playerSubtitleCallback = subtitleCallback,
             context = ctx,
-            mediaContext = MediaContextManager.currentContext
+            mediaContext = MediaContextManager.currentContext,
+            manual = isManualMode,
+            playerDurationProvider = {
+                try { PlayerSubtitleBridge.duration() } catch (_: Throwable) { null }
+            },
+            onInterimTrack = onInterimTrack,
+            onFinalTrack = onFinalTrack
         )
         activeSession = session
 
+        if (isManualMode) {
+            // Manual mode: pure passthrough. No auto-selection, no pre-announce, no fallback discovery.
+            ManualTranslationButton.attach(session)
+            val result = try {
+                baseApi.loadLinks(data, isCasting, subtitleCallback, callback)
+            } catch (t: Throwable) {
+                logE(TAG, "Manual-mode inner provider crashed during loadLinks: ${t.message}", t)
+                session.cancelSession()
+                if (activeSession === session) activeSession = null
+                false
+            }
+            logI(TAG, "Manual mode passthrough finished for '${baseApi.name}' (result=$result). Awaiting Translate button.")
+            ManualTranslationButton.syncSoon()
+            return result
+        }
+
         val candidateCount = AtomicInteger(0)
-        val firstNonBypassCandidate = AtomicReference<SubtitleFile?>(null)
+        val firstAcceptedCandidate = AtomicReference<SubtitleFile?>(null)
         val capturedLinks = CopyOnWriteArrayList<ExtractorLink>()
         val interceptingSubtitleCallback: (SubtitleFile) -> Unit = { subFile ->
             candidateCount.incrementAndGet()
@@ -296,22 +346,13 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
                 logW(TAG, "Player subtitle callback threw: ${t.message}")
             }
 
-            // Record first non-target-lang candidate; pre-announcement waits until loadLinks settles
-            // (or post-debounce in processCandidate for async peer enrichers) so concurrent targetLang tracks
-            // bypass cleanly without emitting a ghost [AI] track.
-            val subScore = SubtitlePriorityEvaluator.calculateScore(
-                subFile = subFile,
-                targetLang = session.targetLang,
-                priorityMode = TranslatorConfig.sourcePriorityMode,
-                customList = TranslatorConfig.getCustomPriorityLanguages()
-            )
-            if (subScore != SubtitlePriorityEvaluator.SCORE_BYPASS_TARGET_LANG) {
-                firstNonBypassCandidate.compareAndSet(null, subFile)
-            }
-
             // PATH 2: ASYNCHRONOUS CANDIDATE DISCOVERY & QUEUEING
+            // Only accepted candidates may trigger pre-announcement (no more ghost [AI] tracks).
             try {
-                session.queueCandidate(subFile)
+                val accepted = session.queueCandidate(subFile)
+                if (accepted) {
+                    firstAcceptedCandidate.compareAndSet(null, subFile)
+                }
             } catch (t: Throwable) {
                 logW(TAG, "Session queueCandidate threw: ${t.message}")
             }
@@ -340,14 +381,16 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
         }
 
         val count = candidateCount.get()
-        logI(TAG, "baseApi.loadLinks for '${baseApi.name}' finished (result=$result, candidateCount=$count)")
-        val syncCandidate = firstNonBypassCandidate.get()
+        val accepted = session.acceptedCandidateCount
+        logI(TAG, "baseApi.loadLinks for '${baseApi.name}' finished (result=$result, candidateCount=$count, accepted=$accepted)")
+        val syncCandidate = firstAcceptedCandidate.get()
         if (syncCandidate != null && !session.isCancelled && !session.isTargetLanguageBypassed) {
             session.preAnnounceIfNeeded(syncCandidate)
         }
-        if (count == 0 && !session.isCancelled && !session.isTargetLanguageBypassed) {
-            logI(TAG, "Provider '${baseApi.name}' produced 0 subtitle candidates. Launching source fallback discovery across ${capturedLinks.size} video links and core providers.")
-            session.launchSourceFallbackDiscovery(capturedLinks, MediaContextManager.currentImdbId)
+        if (accepted == 0 && !session.isCancelled && !session.isTargetLanguageBypassed) {
+            val (season, episode) = MediaContextManager.resolveEpisode(data)
+            logI(TAG, "Provider '${baseApi.name}' produced 0 accepted candidates. Launching episode-aware fallback discovery (ep=$episode, season=$season) across ${capturedLinks.size} video links.")
+            session.launchSourceFallbackDiscovery(capturedLinks, MediaContextManager.currentImdbId, season, episode)
         }
         return result
     }
@@ -374,11 +417,55 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
  * Singleton managing media metadata captured from CloudStream LoadResponse.
  */
 object MediaContextManager {
+    private const val MAX_EPISODE_CACHE = 300
+
     @Volatile
     var currentContext: MediaContext? = null
 
     @Volatile
     var currentImdbId: String? = null
+
+    private val episodeCache = ConcurrentHashMap<String, Pair<Int?, Int?>>()
+
+    @Volatile
+    private var latestEpisode: Pair<Int?, Int?>? = null
+
+    private fun cacheEpisode(data: String?, season: Int?, episode: Int?) {
+        if (data.isNullOrBlank() || episode == null) return
+        if (episodeCache.size >= MAX_EPISODE_CACHE) episodeCache.clear()
+        val pair = season to episode
+        episodeCache[data] = pair
+        latestEpisode = pair
+    }
+
+    private fun cacheEpisodes(response: LoadResponse) {
+        try {
+            when (response) {
+                is AnimeLoadResponse -> response.episodes?.values?.forEach { list ->
+                    list.forEach { ep -> cacheEpisode(ep.data, ep.season, ep.episode) }
+                }
+                is TvSeriesLoadResponse -> response.episodes?.forEach { ep ->
+                    cacheEpisode(ep.data, ep.season, ep.episode)
+                }
+                is MovieLoadResponse -> cacheEpisode(response.dataUrl, 1, 1)
+            }
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * Resolves (season, episode) for a loadLinks payload: cache hit first, then URL regex heuristics.
+     */
+    fun resolveEpisode(data: String): Pair<Int?, Int?> {
+        episodeCache[data]?.let { return it }
+        val match = try {
+            Regex("""(?::|/|ep|episode|\b)(\d{1,4})\b""", RegexOption.IGNORE_CASE).findAll(data).lastOrNull()
+        } catch (_: Throwable) {
+            null
+        }
+        val parsedEpisode = match?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val season = latestEpisode?.first ?: 1
+        return season to (parsedEpisode ?: latestEpisode?.second)
+    }
 
     fun setContext(response: LoadResponse) {
         val actorsList = try {
@@ -422,6 +509,8 @@ object MediaContextManager {
             genres = tagList,
             characterActors = charActors
         )
+
+        cacheEpisodes(response)
     }
 
     fun setDirectContext(context: MediaContext?) {
@@ -431,5 +520,7 @@ object MediaContextManager {
     fun clear() {
         currentContext = null
         currentImdbId = null
+        episodeCache.clear()
+        latestEpisode = null
     }
 }

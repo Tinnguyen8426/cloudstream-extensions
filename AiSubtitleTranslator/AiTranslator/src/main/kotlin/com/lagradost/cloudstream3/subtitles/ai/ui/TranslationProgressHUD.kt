@@ -89,10 +89,11 @@ object TranslationProgressHUD {
         totalChunks: Int = 0,
         totalCues: Int = 0,
         initialStatus: String? = null,
-        onCancel: (() -> Unit)? = null
+        onCancel: (() -> Unit)? = null,
+        force: Boolean = false
     ) {
         try {
-            if (!TranslatorConfig.showProgressHUD) return
+            if (!TranslatorConfig.showProgressHUD && !force) return
             onCancelCallback = onCancel
 
             val act = activity
@@ -153,7 +154,7 @@ object TranslationProgressHUD {
         message: String? = null
     ) {
         try {
-            if (!TranslatorConfig.showProgressHUD) return
+            if (!TranslatorConfig.showProgressHUD && hudViewRef?.get() == null) return
             val act = activityRef?.get() ?: return
 
             runOnMainThread(act) {
@@ -182,7 +183,7 @@ object TranslationProgressHUD {
      */
     fun updateStatus(message: String) {
         try {
-            if (!TranslatorConfig.showProgressHUD) return
+            if (!TranslatorConfig.showProgressHUD && hudViewRef?.get() == null) return
             val act = activityRef?.get() ?: return
 
             runOnMainThread(act) {
@@ -198,7 +199,7 @@ object TranslationProgressHUD {
      */
     fun onSeek(posSec: Long) {
         try {
-            if (!TranslatorConfig.showProgressHUD) return
+            if (!TranslatorConfig.showProgressHUD && hudViewRef?.get() == null) return
             val act = activityRef?.get() ?: return
 
             runOnMainThread(act) {
@@ -214,7 +215,7 @@ object TranslationProgressHUD {
      */
     fun showSuccess(message: String = "Hoàn tất 100%! Phụ đề đã sẵn sàng") {
         try {
-            if (!TranslatorConfig.showProgressHUD) return
+            if (!TranslatorConfig.showProgressHUD && hudViewRef?.get() == null) return
             val act = activityRef?.get() ?: return
 
             runOnMainThread(act) {
@@ -252,7 +253,7 @@ object TranslationProgressHUD {
      */
     fun showError(errorMessage: String) {
         try {
-            if (!TranslatorConfig.showProgressHUD) return
+            if (!TranslatorConfig.showProgressHUD && hudViewRef?.get() == null) return
             val act = activityRef?.get() ?: return
 
             runOnMainThread(act) {

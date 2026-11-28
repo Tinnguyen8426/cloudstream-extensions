@@ -158,6 +158,30 @@ object AITranslatorSettingsDialog {
         }
         rootLayout.addView(hudCheckBox)
 
+        // --- Translation Mode (Auto vs Manual) ---
+        addLabel("Chế độ dịch (Translation Mode):")
+        val modeRadioGroup = RadioGroup(context).apply {
+            orientation = RadioGroup.VERTICAL
+        }
+        val rbModeAuto = RadioButton(context).apply {
+            id = generateSafeId()
+            text = "Tự động: chọn và dịch phụ đề tốt nhất khi phát video"
+            textSize = 13f
+        }
+        val rbModeManual = RadioButton(context).apply {
+            id = generateSafeId()
+            text = "Thủ công: hiện nút \"Dịch\" trên màn hình, chỉ dịch phụ đề đang chọn"
+            textSize = 13f
+        }
+        modeRadioGroup.addView(rbModeAuto)
+        modeRadioGroup.addView(rbModeManual)
+        if (TranslatorConfig.translationMode == TranslatorConfig.MODE_MANUAL) {
+            rbModeManual.isChecked = true
+        } else {
+            rbModeAuto.isChecked = true
+        }
+        rootLayout.addView(modeRadioGroup)
+
         // =====================================================================
         // SECTION 1: Cấu hình Dịch thuật (Translation Settings)
         // =====================================================================
@@ -577,6 +601,12 @@ object AITranslatorSettingsDialog {
                 TranslatorConfig.DELIVERY_STRATEGY_A
             }
 
+            TranslatorConfig.translationMode = if (modeRadioGroup.checkedRadioButtonId == rbModeManual.id) {
+                TranslatorConfig.MODE_MANUAL
+            } else {
+                TranslatorConfig.MODE_AUTO
+            }
+
             TranslatorConfig.sourcePriorityMode = when (priorityRadioGroup.checkedRadioButtonId) {
                 rbPriorityAuto.id -> TranslatorConfig.PRIORITY_AUTO
                 rbPriorityWestern.id -> TranslatorConfig.PRIORITY_ENGLISH_FIRST
@@ -620,6 +650,7 @@ object AITranslatorSettingsDialog {
 
             // 2. Persist to SharedPreferences
             TranslatorConfig.save(context)
+            ManualTranslationButton.syncSoon()
         }
 
         val builder = AlertDialog.Builder(context)
@@ -636,6 +667,7 @@ object AITranslatorSettingsDialog {
             .setNeutralButton("Khôi phục mặc định") { dialog, _ ->
                 TranslatorConfig.resetToDefaults()
                 TranslatorConfig.save(context)
+                ManualTranslationButton.syncSoon()
                 showToast(context, "Đã khôi phục cài đặt mặc định.")
                 dialog.dismiss()
             }

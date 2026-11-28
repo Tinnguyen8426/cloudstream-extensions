@@ -64,12 +64,19 @@ class AITranslationSession(
     val deliveryStrategy: String = TranslatorConfig.deliveryStrategy,
     val context: Context? = null,
     val clientOverride: AITranslationClient? = null,
-    val mediaContext: MediaContext? = null
+    val mediaContext: MediaContext? = null,
+    val manual: Boolean = false,
+    val playerDurationProvider: (() -> Long?)? = null,
+    val onInterimTrack: ((SubtitleFile) -> Unit)? = null,
+    val onFinalTrack: ((SubtitleFile) -> Unit)? = null
 ) {
     companion object {
         private const val TAG = "AITranslationSession"
         private const val MAX_CONCURRENT_CHUNK_WORKERS = 4
         private const val INTAKE_DEBOUNCE_MS = 200L
+        private const val PREEMPTION_SCORE_MARGIN = 100
+        private const val PREEMPTION_COOLDOWN_MS = 10_000L
+        private const val MAX_PREEMPTIONS = 2
 
         fun getTargetLanguageDisplayName(langCode: String): String {
             return when (langCode.lowercase(Locale.ROOT).trim()) {
@@ -422,7 +429,8 @@ class AITranslationSession(
         SubtitleCacheManager.computeSha256(raw).take(32)
     }
 
-    private val completionLatch = CountDownLatch(1)
+    @Volatile
+    private var completionLatch: CountDownLatch = CountDownLatch(1)
 
     @Volatile
     var completedFile: File? = null
@@ -458,7 +466,8 @@ class AITranslationSession(
         if (isTargetLanguageBypassed || isCancelled) return false
         if (completedFile != null || isCompleted) return true
         return try {
-            val finished = completionLatch.await(timeoutMs, TimeUnit.MILLISECONDS)
+            val latch = completionLatch
+            val finished = latch.await(timeoutMs, TimeUnit.MILLISECONDS)
             if (isTargetLanguageBypassed || isCancelled) return false
             finished && (completedFile != null || isCompleted)
         } catch (_: InterruptedException) {
@@ -479,7 +488,7 @@ class AITranslationSession(
         synchronized(dispatchLock) {
             reprioritizePendingChunksLocked(posMs)
         }
-        if (TranslatorConfig.showProgressHUD && !isCompleted && !isCancelled) {
+        if ((TranslatorConfig.showProgressHUD || manual) && !isCompleted && !isCancelled) {
             try {
                 TranslationProgressHUD.onSeek(posMs / 1000)
             } catch (_: Throwable) {}
@@ -512,6 +521,20 @@ class AITranslationSession(
     private val candidateList = CopyOnWriteArrayList<SubtitleFile>()
     private val emittedUrls = ConcurrentHashMap.newKeySet<String>()
     private val failedUrls = ConcurrentHashMap.newKeySet<String>()
+    private val ownTrackPaths = ConcurrentHashMap.newKeySet<String>()
+
+    @Volatile
+    var acceptedCandidateCount: Int = 0
+        private set
+
+    val isTranslationInFlight: Boolean
+        get() = translationJob?.isActive == true
+
+    @Volatile
+    private var preemptionCount: Int = 0
+
+    @Volatile
+    private var lastPreemptionAtMs: Long = 0L
 
     fun recordExtractorLink(link: ExtractorLink) {
         recordedLinks.add(link)
@@ -534,30 +557,43 @@ class AITranslationSession(
                 val targetDisplayName = getTargetLanguageDisplayName(targetLang)
                 val preAnnounceLabel = "[AI] $targetDisplayName"
                 logI(TAG, "Pre-announcing AI subtitle track: '$preAnnounceLabel' -> $streamUrl")
-                playerSubtitleCallback(SubtitleFile(lang = preAnnounceLabel, url = streamUrl))
+                emitTrack(preAnnounceLabel, streamUrl)
             } catch (t: Throwable) {
                 logW(TAG, "Pre-announcement failed: ${t.message}")
             }
         }
     }
 
-    fun launchSourceFallbackDiscovery(capturedLinks: List<ExtractorLink>, imdbId: String? = null) {
+    fun launchSourceFallbackDiscovery(
+        capturedLinks: List<ExtractorLink>,
+        imdbId: String? = null,
+        seasonNumber: Int? = null,
+        episodeNumber: Int? = null
+    ) {
         if (isCancelled || isTargetLanguageBypassed || isCompleted) return
         sessionScope.launch {
             try {
-                // Brief grace period so async peer enrichers can still deliver candidates first
-                delay(150L)
-                if (!isActive || isCancelled || isTargetLanguageBypassed || isCompleted) return@launch
-                if (candidateList.isNotEmpty() || translationJob?.isActive == true) return@launch
+                // Staged grace probes so async peer enrichers (Kitsunekko scrape ~seconds) can deliver first
+                for (graceStepMs in longArrayOf(400L, 1100L, 1500L)) {
+                    delay(graceStepMs)
+                    if (!isActive || isCancelled || isTargetLanguageBypassed || isCompleted) return@launch
+                    if (acceptedCandidateCount > 0 || candidateList.isNotEmpty() || translationJob?.isActive == true) {
+                        logI(TAG, "Fallback discovery deferred: accepted candidates already present.")
+                        return@launch
+                    }
+                }
 
                 val linksSnapshot = (capturedLinks + recordedLinks).distinctBy { it.url }
                 val title = mediaContext?.title?.takeIf { it.isNotBlank() } ?: mediaPayload.takeIf { it.isNotBlank() }
+                logI(TAG, "Fallback discovery starting (episode-aware): ep=$episodeNumber season=$seasonNumber")
                 val discovery = StreamSubtitleExtractor.discoverFallbackSubtitles(
                     capturedLinks = linksSnapshot,
                     targetLang = targetLang,
                     title = title,
                     year = mediaContext?.year,
-                    imdbId = imdbId
+                    imdbId = imdbId,
+                    seasonNumber = seasonNumber,
+                    episodeNumber = episodeNumber
                 )
                 if (!isActive || isCancelled) return@launch
 
@@ -572,16 +608,17 @@ class AITranslationSession(
                         showToast("[AI Translator] Đã có sẵn phụ đề ${discovery.matchedLang} trong nguồn phát, bỏ qua dịch AI.")
                     }
                     is StreamSubtitleExtractor.FallbackDiscoveryResult.CandidatesFound -> {
-                        val first = discovery.candidates.firstOrNull()
-                        if (first != null) {
-                            preAnnounceIfNeeded(first)
-                        }
+                        var announced = preAnnounced.get()
                         for (sub in discovery.candidates) {
                             if (isCancelled || isTargetLanguageBypassed) break
                             try {
                                 playerSubtitleCallback(sub)
                             } catch (_: Throwable) {}
-                            queueCandidate(sub)
+                            val accepted = queueCandidate(sub)
+                            if (accepted && !announced) {
+                                preAnnounceIfNeeded(sub)
+                                announced = preAnnounced.get()
+                            }
                         }
                     }
                     is StreamSubtitleExtractor.FallbackDiscoveryResult.NoneFound -> {
@@ -600,11 +637,16 @@ class AITranslationSession(
      * Evaluates priority score, enforces Target Language Bypass Rule, and dynamically promotes
      * higher-ranked candidates.
      */
-    fun queueCandidate(subFile: SubtitleFile) {
-        if (isCancelled || isTargetLanguageBypassed || isCompleted) return
-        if (failedUrls.contains(subFile.url)) return
-        if (subFile.url.contains("127.0.0.1") || subFile.url.contains("localhost") || subFile.lang.contains("[AI", ignoreCase = true)) return
-        if (candidateList.any { it.url == subFile.url && it.lang == subFile.lang }) return
+    fun queueCandidate(subFile: SubtitleFile): Boolean {
+        if (isCancelled || isTargetLanguageBypassed) return false
+        // Manual mode never auto-selects or auto-queues tracks
+        if (manual) return false
+        if (failedUrls.contains(subFile.url)) return false
+        if (subFile.lang.contains("[AI", ignoreCase = true) || AITranslatorLocalServer.isOwnSubtitleUrl(subFile.url)) {
+            logI(TAG, "Skipping own AI track candidate '${subFile.lang}' -> ${subFile.url}")
+            return false
+        }
+        if (candidateList.any { it.url == subFile.url && it.lang == subFile.lang }) return false
 
         val score = SubtitlePriorityEvaluator.calculateScore(
             subFile = subFile,
@@ -613,45 +655,89 @@ class AITranslationSession(
             customList = TranslatorConfig.getCustomPriorityLanguages()
         )
 
-        // 1. Target Language Bypass Rule: 0 redundant requests if target language already exists
+        // 1. Target Language Bypass Rule: only while no translation work exists.
+        // A late target-language track must never destroy a running/finished translation.
         if (score == SubtitlePriorityEvaluator.SCORE_BYPASS_TARGET_LANG) {
-            logI(TAG, "Target language bypass triggered for '${subFile.lang}'. Skipping AI translation.")
-            isTargetLanguageBypassed = true
-            cancelCurrentJob()
-            candidateList.clear()
-            completionLatch.countDown()
-            AITranslatorLocalServer.unregisterSession(sessionKey)
-            showToast("[AI Translator] Đã có sẵn phụ đề ${subFile.lang}, bỏ qua dịch AI.")
-            return
+            synchronized(this) {
+                if (translationJob?.isActive == true || isCompleted || currentProcessingUrl != null) {
+                    logI(TAG, "Ignoring late target-language candidate '${subFile.lang}'; active translation preserved.")
+                    return false
+                }
+                logI(TAG, "Target language bypass triggered for '${subFile.lang}'. Skipping AI translation.")
+                isTargetLanguageBypassed = true
+                cancelCurrentJob()
+                candidateList.clear()
+                completionLatch.countDown()
+                AITranslatorLocalServer.unregisterSession(sessionKey)
+                showToast("[AI Translator] Đã có sẵn phụ đề ${subFile.lang}, bỏ qua dịch AI.")
+                return false
+            }
         }
 
         candidateList.add(subFile)
+        acceptedCandidateCount += 1
 
         // 2. Dynamic Candidate Promotion: Higher score preempts active lower-priority job.
-        // Also picks up candidates if previous job failed and finished without completion.
+        // 3. Post-completion preemption: a clearly better late candidate may replace a finished translation
+        //    (bounded by score margin, cooldown and a hard cap to prevent loops).
         synchronized(this) {
-            val shouldStart = score > currentBestScore || (translationJob?.isActive != true && !isCompleted)
-            if (shouldStart) {
+            val now = System.currentTimeMillis()
+            val isUpgradeAfterCompletion = isCompleted &&
+                score > currentBestScore + PREEMPTION_SCORE_MARGIN &&
+                preemptionCount < MAX_PREEMPTIONS &&
+                (now - lastPreemptionAtMs) >= PREEMPTION_COOLDOWN_MS
+            val shouldStart = isUpgradeAfterCompletion ||
+                (!isCompleted && (score > currentBestScore || translationJob?.isActive != true))
+            if (!shouldStart) return true
+
+            if (isUpgradeAfterCompletion) {
+                logI(TAG, "Post-completion preemption: candidate '${subFile.lang}' (score: $score > current: $currentBestScore + $PREEMPTION_SCORE_MARGIN)")
+                preemptionCount += 1
+                lastPreemptionAtMs = now
+                isCompleted = false
+                completedFile = null
+                completionLatch = CountDownLatch(1)
+                AITranslatorLocalServer.registerSession(sessionKey, this)
+            } else {
                 logI(TAG, "Promoting subtitle candidate '${subFile.lang}' (score: $score > current: $currentBestScore)")
-                currentBestScore = score
-                cancelCurrentJob()
-                translationJob = sessionScope.launch {
-                    processCandidate(subFile, preAnnounceAfterDebounce = true)
-                }
+            }
+            currentBestScore = score
+            cancelCurrentJob()
+            translationJob = sessionScope.launch {
+                processCandidate(subFile, preAnnounceAfterDebounce = true)
             }
         }
+        return true
     }
 
     /**
-     * Explicitly starts a translation session for a candidate file.
+     * Explicitly starts a translation session for a candidate file (manual mode entry point).
      */
     fun startSession(subtitleFile: SubtitleFile): Job {
         cancelCurrentJob()
-        val job = sessionScope.launch {
-            processCandidate(subtitleFile, preAnnounceAfterDebounce = false)
+        synchronized(this) {
+            if (manual) {
+                // Allow retry after a HUD cancel without reopening the episode
+                isCancelled = false
+                isTargetLanguageBypassed = false
+            }
+            val score = SubtitlePriorityEvaluator.calculateScore(
+                subFile = subtitleFile,
+                targetLang = targetLang,
+                priorityMode = TranslatorConfig.sourcePriorityMode,
+                customList = TranslatorConfig.getCustomPriorityLanguages()
+            )
+            currentBestScore = maxOf(currentBestScore, score)
+            isCompleted = false
+            completedFile = null
+            completionLatch = CountDownLatch(1)
+            AITranslatorLocalServer.registerSession(sessionKey, this)
+            val job = sessionScope.launch {
+                processCandidate(subtitleFile, preAnnounceAfterDebounce = false)
+            }
+            translationJob = job
+            return job
         }
-        translationJob = job
-        return job
     }
 
     /**
@@ -683,7 +769,7 @@ class AITranslationSession(
         castResolutionJob = null
         cancelCurrentJob()
         try {
-            sessionScope.cancel()
+            if (!manual) sessionScope.cancel()
         } catch (_: Throwable) {}
         activeContextWindow?.reset()
         CharacterProfileManager.resetEpisodicState(mediaContext?.title)
@@ -696,7 +782,7 @@ class AITranslationSession(
         if (userInitiated) {
             showToast("Đã hủy dịch phụ đề.")
         }
-        if (TranslatorConfig.showProgressHUD) {
+        if (TranslatorConfig.showProgressHUD || manual) {
             try {
                 TranslationProgressHUD.dismiss()
             } catch (_: Throwable) {}
@@ -708,7 +794,7 @@ class AITranslationSession(
      * Handles candidate failure by logging, tracking failed candidate URL, and dynamically falling back
      * to the next best viable candidate from candidateList if available.
      */
-    private suspend fun onCandidateFailed(failedCandidate: SubtitleFile, errorMessage: String) {
+    private suspend fun onCandidateFailed(failedCandidate: SubtitleFile, errorMessage: String, silent: Boolean = false) {
         failedUrls.add(failedCandidate.url)
         logW(TAG, "Candidate '${failedCandidate.lang}' failed (${failedCandidate.url}): $errorMessage")
 
@@ -738,7 +824,7 @@ class AITranslationSession(
             }
             completionLatch.countDown()
             showToast(errorMessage)
-            if (TranslatorConfig.showProgressHUD) {
+            if (!silent && (TranslatorConfig.showProgressHUD || manual)) {
                 try {
                     TranslationProgressHUD.showError(errorMessage)
                 } catch (_: Throwable) {}
@@ -784,14 +870,15 @@ class AITranslationSession(
             logI(TAG, "Starting translation pipeline for candidate '${candidate.lang}' (${candidate.url})")
 
             val effectiveModel = TranslatorConfig.getEffectiveModel()
-            if (TranslatorConfig.showProgressHUD) {
+            if (TranslatorConfig.showProgressHUD || manual) {
                 try {
                     TranslationProgressHUD.show(
                         context = context,
                         modelName = effectiveModel,
                         targetLang = targetName,
                         initialStatus = "Đang nạp phụ đề gốc (${candidate.lang})...",
-                        onCancel = { cancelSession(userInitiated = true) }
+                        onCancel = { cancelSession(userInitiated = true) },
+                        force = manual
                     )
                 } catch (_: Throwable) {}
             }
@@ -842,11 +929,13 @@ class AITranslationSession(
                     AITranslatorLocalServer.registerSessionKeyFile(sessionKey, cachedFile)
                     val streamUrl = AITranslatorLocalServer.registerSubtitle(cachedFile)
                     val trackLabel = buildAuthoritativeTrackLabel(targetLang, effectiveModel)
-                    notifyActivePlayer(trackLabel, streamUrl)
+                    val finalUrl = appendCacheBuster(streamUrl, cachedFile)
+                    notifyActivePlayer(trackLabel, finalUrl)
+                    onFinalTrack?.invoke(SubtitleFile(lang = trackLabel, url = finalUrl))
                     showToast("[AI Translator] Đã nạp phụ đề $targetName từ bộ nhớ đệm.")
                     isCompleted = true
                     completionLatch.countDown()
-                    if (TranslatorConfig.showProgressHUD) {
+                    if (TranslatorConfig.showProgressHUD || manual) {
                         try {
                             TranslationProgressHUD.showSuccess("Đã nạp phụ đề từ bộ nhớ đệm (100%)")
                         } catch (_: Throwable) {}
@@ -864,6 +953,21 @@ class AITranslationSession(
                 logE(TAG, "Subtitle parser extracted 0 valid cues from content: ${candidate.url}")
                 onCandidateFailed(candidate, "[AI Translator] Lỗi: Không phân tích được định dạng phụ đề.")
                 return@withContext
+            }
+
+            // Step 5b: Partial-track safeguard (auto mode only). Rejects signs/songs/truncated tracks
+            // before spending API tokens, and tries the next candidate instead.
+            if (!manual) {
+                val durationMs = try { playerDurationProvider?.invoke() } catch (_: Throwable) { null }
+                if (SubtitleCoverageValidator.isLikelyPartial(cues, durationMs)) {
+                    logW(TAG, "Rejecting partial subtitle candidate '${candidate.lang}' (${cues.size} cues, playerDurationMs=$durationMs). Trying next candidate.")
+                    onCandidateFailed(
+                        candidate,
+                        "[AI Translator] Phụ đề nguồn có vẻ không đầy đủ (${candidate.lang}).",
+                        silent = true
+                    )
+                    return@withContext
+                }
             }
 
             // Step 6: Load Tier 2 Progressive Chunk Cache & Split Progressively (Chunk 0: 12-15, Chunks 1..N: 25-45)
@@ -892,7 +996,7 @@ class AITranslationSession(
             val initialDoneCues = cues.count { existingTranslations.containsKey(it.index) }
             val initialPct = if (totalCues > 0) (initialDoneCues * 100 / totalCues) else 0
 
-            if (TranslatorConfig.showProgressHUD) {
+            if (TranslatorConfig.showProgressHUD || manual) {
                 try {
                     TranslationProgressHUD.updateProgress(
                         completedChunks = initialDoneChunks,
@@ -951,7 +1055,7 @@ class AITranslationSession(
                 registry.autoGlossary.isNotEmpty() ||
                 (registry.toneGuide.isNotBlank() && !registry.toneGuide.startsWith("Genres:", ignoreCase = true))
             if (TranslatorConfig.enableCharacterProfiling && cues.size >= 40 && !isRichBible && !isCancelled && isActive) {
-                if (TranslatorConfig.showProgressHUD) {
+                if (TranslatorConfig.showProgressHUD || manual) {
                     try {
                         TranslationProgressHUD.updateStatus("Đang phân tích ngữ cảnh toàn phim...")
                     } catch (_: Throwable) {}
@@ -1066,7 +1170,7 @@ class AITranslationSession(
                 if (isChunkFullyCached) {
                     sceneWindow.recordFinalizedCues(chunkCues, existingTranslations)
                     localDigest = buildRollingSceneDigest(chunkCues, existingTranslations)
-                    if (TranslatorConfig.showProgressHUD) {
+                    if (TranslatorConfig.showProgressHUD || manual) {
                         try {
                             val doneChunks = chunks.count { it.all { cue -> existingTranslations.containsKey(cue.index) } }
                             val doneCues = cues.count { existingTranslations.containsKey(it.index) }
@@ -1169,12 +1273,23 @@ class AITranslationSession(
                             AITranslatorLocalServer.registerSessionKeyFile(sessionKey, interimFile)
                             completionLatch.countDown()
                             logI(TAG, "Chunk 0 interim subtitle assembled and registered (${interimFile.length()} bytes) for session $sessionKey")
+                            if (manual) {
+                                try {
+                                    val interimUrl = AITranslatorLocalServer.getSubtitleUrl(sessionKey)
+                                    val interimLabel = "[AI] ${getTargetLanguageDisplayName(targetLang)} (tạm)"
+                                    emitTrack(interimLabel, interimUrl)
+                                    onInterimTrack?.invoke(SubtitleFile(lang = interimLabel, url = interimUrl))
+                                    logI(TAG, "Manual interim track auto-switched: '$interimLabel' -> $interimUrl")
+                                } catch (t: Throwable) {
+                                    logW(TAG, "Manual interim track switch failed: ${t.message}")
+                                }
+                            }
                         } catch (e: Throwable) {
                             logW(TAG, "Failed to assemble interim subtitle for Chunk 0: ${e.message}")
                         }
                     }
 
-                    if (TranslatorConfig.showProgressHUD) {
+                    if (TranslatorConfig.showProgressHUD || manual) {
                         try {
                             val doneChunks = chunks.count { it.all { cue -> existingTranslations.containsKey(cue.index) } }
                             val doneCues = cues.count { existingTranslations.containsKey(it.index) }
@@ -1275,9 +1390,15 @@ class AITranslationSession(
             AITranslatorLocalServer.registerSessionKeyFile(sessionKey, fullFile)
             val streamUrl = AITranslatorLocalServer.registerSubtitle(fullFile)
             val authoritativeLabel = buildAuthoritativeTrackLabel(targetLang, effectiveModel)
+            val finalUrl = appendCacheBuster(streamUrl, fullFile)
 
             logI(TAG, "Translation completed (allClean=$allClean). Emitting authoritative track: '$authoritativeLabel'")
-            notifyActivePlayer(authoritativeLabel, streamUrl)
+            notifyActivePlayer(authoritativeLabel, finalUrl)
+            try {
+                onFinalTrack?.invoke(SubtitleFile(lang = authoritativeLabel, url = finalUrl))
+            } catch (t: Throwable) {
+                logW(TAG, "Final track callback failed: ${t.message}")
+            }
             if (allClean) {
                 showToast("[AI Translator] Phụ đề $targetName đã dịch xong và sẵn sàng!")
             } else {
@@ -1285,7 +1406,7 @@ class AITranslationSession(
             }
             isCompleted = true
             completionLatch.countDown()
-            if (TranslatorConfig.showProgressHUD) {
+            if (TranslatorConfig.showProgressHUD || manual) {
                 try {
                     if (allClean) {
                         TranslationProgressHUD.showSuccess("Hoàn tất 100%! Phụ đề đã sẵn sàng")
@@ -1370,7 +1491,7 @@ class AITranslationSession(
                     quotaAborted.set(true)
                     if (quotaToastShown.compareAndSet(false, true)) {
                         showToast("[AI Translator] Lỗi: Hết hạn mức API (Quota Exhausted)")
-                        if (TranslatorConfig.showProgressHUD) {
+                        if (TranslatorConfig.showProgressHUD || manual) {
                             try {
                                 TranslationProgressHUD.showError("Lỗi: Hết hạn mức API (Quota Exhausted)")
                             } catch (_: Throwable) {}
@@ -1533,11 +1654,26 @@ class AITranslationSession(
         val key = "$label|$url"
         if (emittedUrls.add(key)) {
             try {
+                ownTrackPaths.add(trackPath(url))
                 playerSubtitleCallback(SubtitleFile(lang = label, url = url))
             } catch (t: Throwable) {
                 logW(TAG, "Error invoking playerSubtitleCallback: ${t.message}")
             }
         }
+    }
+
+    private fun trackPath(url: String): String {
+        return try {
+            URI(url.substringBefore("?")).path ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
+    private fun appendCacheBuster(url: String, file: File?): String {
+        if (url.contains("?")) return url
+        val version = try { file?.lastModified() ?: 0L } catch (_: Throwable) { 0L }
+        return "$url?v=$version"
     }
 
     private fun resolveFallbackHeadersFromLinks(targetUrl: String): Map<String, String> {

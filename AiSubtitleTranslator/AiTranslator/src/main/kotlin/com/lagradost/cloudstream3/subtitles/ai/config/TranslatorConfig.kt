@@ -31,6 +31,10 @@ object TranslatorConfig {
     const val STRATEGY_SKELETON = "strategy_b"
     const val STRATEGY_AUTO = "auto"
 
+    // Translation Modes
+    const val MODE_AUTO = "auto"
+    const val MODE_MANUAL = "manual"
+
     // Configuration Fields with Production Defaults
     @Volatile var appContext: Context? = null
     @Volatile var isEnabled: Boolean = true
@@ -51,6 +55,7 @@ object TranslatorConfig {
     @Volatile var maxChunkCues: Int = 45
     @Volatile var showProgressHUD: Boolean = true
     @Volatile var highSpeedMode: Boolean = false
+    @Volatile var translationMode: String = MODE_AUTO
 
     /**
      * Initializes configuration by loading saved values from Android SharedPreferences.
@@ -77,6 +82,7 @@ object TranslatorConfig {
             maxChunkCues = prefs.getInt("key_max_chunk_cues", 45)
             showProgressHUD = prefs.getBoolean("key_show_progress_hud", true)
             highSpeedMode = prefs.getBoolean("key_high_speed_mode", false)
+            translationMode = prefs.getString("key_translation_mode", MODE_AUTO) ?: MODE_AUTO
         } catch (_: Throwable) {
             // Graceful fallback to default values if context or prefs are unavailable
         }
@@ -108,6 +114,7 @@ object TranslatorConfig {
                 putInt("key_max_chunk_cues", maxChunkCues)
                 putBoolean("key_show_progress_hud", showProgressHUD)
                 putBoolean("key_high_speed_mode", highSpeedMode)
+                putString("key_translation_mode", translationMode)
                 apply()
             }
         } catch (_: Throwable) {}
@@ -159,6 +166,7 @@ object TranslatorConfig {
         maxChunkCues = 45
         showProgressHUD = true
         highSpeedMode = false
+        translationMode = MODE_AUTO
 
         if (context != null) {
             save(context)

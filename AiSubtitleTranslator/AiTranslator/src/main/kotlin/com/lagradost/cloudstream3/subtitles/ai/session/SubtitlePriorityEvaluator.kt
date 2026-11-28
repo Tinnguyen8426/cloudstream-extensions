@@ -45,8 +45,8 @@ object SubtitlePriorityEvaluator {
             return SCORE_BYPASS_TARGET_LANG
         }
 
-        // 2. Score based on configured strategy
-        return when (priorityMode) {
+        // 2. Score based on configured strategy, then penalize low-quality labels
+        val baseScore = when (priorityMode) {
             TranslatorConfig.PRIORITY_ANIME_FIRST -> {
                 when {
                     isJapanese(lang) -> 1000
@@ -77,7 +77,36 @@ object SubtitlePriorityEvaluator {
                 }
             }
         }
+        return (baseScore - labelPenalty(lang)).coerceAtLeast(SCORE_BYPASS_TARGET_LANG + 1)
     }
+
+    /**
+     * Penalty applied for labels that are not full dialogue tracks.
+     * Bypass (-1000) always wins over penalties because it is checked first.
+     */
+    fun labelPenalty(label: String): Int {
+        val clean = label.trim().lowercase(Locale.ROOT)
+        if (clean.isEmpty()) return 0
+        val tokens = clean.split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }.toSet()
+        var penalty = 0
+        if (clean.contains("commentary")) penalty += 800
+        val isSdh = clean.contains("sdh") || clean.contains("hearing impaired") ||
+                clean.contains("closed caption") || tokens.contains("cc")
+        if (isSdh) {
+            penalty += if (TranslatorConfig.preserveSdh) 50 else 600
+        }
+        val isSignsSongs = clean.contains("signs") || clean.contains("sign") ||
+                clean.contains("songs") || clean.contains("song") || clean.contains("karaoke") ||
+                clean.contains("forced") || tokens.contains("op") || tokens.contains("ed") ||
+                tokens.contains("opening") || tokens.contains("ending") || tokens.contains("karaoke")
+        if (isSignsSongs) penalty += 600
+        return penalty
+    }
+
+    /**
+     * True when the label describes a partial/auxiliary track (signs, songs, forced, SDH, commentary...).
+     */
+    fun isLowQualityLabel(label: String): Boolean = labelPenalty(label) > 0
 
     /**
      * Evaluates a candidate pool of subtitle tracks and selects the optimal source.

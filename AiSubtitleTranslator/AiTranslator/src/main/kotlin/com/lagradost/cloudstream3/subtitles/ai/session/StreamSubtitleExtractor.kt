@@ -632,13 +632,16 @@ object StreamSubtitleExtractor {
         sourcePriorityMode: String = TranslatorConfig.sourcePriorityMode,
         customPriorityList: List<String> = TranslatorConfig.getCustomPriorityLanguages(),
         apisOverride: List<Pair<SubtitleAPI, AuthData?>>? = null,
-        timeoutMs: Long = 4000L
+        timeoutMs: Long = 4000L,
+        seasonNumber: Int? = null,
+        episodeNumber: Int? = null
     ): FallbackDiscoveryResult {
         val cleanTitle = AniListCastResolver.cleanAnimeTitle(title)
         if (cleanTitle.isBlank() && imdbId.isNullOrBlank()) return FallbackDiscoveryResult.NoneFound
 
         val providers = apisOverride ?: resolveCoreSubtitleApis()
         if (providers.isEmpty()) return FallbackDiscoveryResult.NoneFound
+        logI(TAG, "SubtitleAPI query episode-aware: ep=$episodeNumber season=$seasonNumber")
 
         val cleanTarget = targetLang.trim().lowercase(Locale.ROOT)
         val searchLangs = buildSearchLanguages(targetLang, sourcePriorityMode, customPriorityList)
@@ -658,11 +661,13 @@ object StreamSubtitleExtractor {
                                 query = cleanTitle.ifBlank { imdbId ?: "" },
                                 lang = cleanTarget,
                                 imdbId = imdbId,
-                                epNumber = null,
-                                seasonNumber = null,
+                                epNumber = episodeNumber,
+                                seasonNumber = seasonNumber,
                                 year = year
                             )
-                            val targetEntities = api.search(auth, targetQuery) ?: emptyList()
+                            val targetEntities = (api.search(auth, targetQuery) ?: emptyList()).filter { entity ->
+                                seasonNumber == null || entity.seasonNumber == null || entity.seasonNumber == seasonNumber
+                            }
                             val targetEntity = targetEntities.firstOrNull { entity ->
                                 SubtitlePriorityEvaluator.isMatchingLanguage(entity.lang, targetLang)
                             }
@@ -689,11 +694,13 @@ object StreamSubtitleExtractor {
                                 query = cleanTitle.ifBlank { imdbId ?: "" },
                                 lang = langCode,
                                 imdbId = imdbId,
-                                epNumber = null,
-                                seasonNumber = null,
+                                epNumber = episodeNumber,
+                                seasonNumber = seasonNumber,
                                 year = year
                             )
-                            val entities = api.search(auth, query) ?: emptyList()
+                            val entities = (api.search(auth, query) ?: emptyList()).filter { entity ->
+                                seasonNumber == null || entity.seasonNumber == null || entity.seasonNumber == seasonNumber
+                            }
                             if (entities.isEmpty()) continue
 
                             // Check immediate Target Language Bypass on search results
@@ -823,7 +830,9 @@ object StreamSubtitleExtractor {
         customPriorityList: List<String> = TranslatorConfig.getCustomPriorityLanguages(),
         httpClient: OkHttpClient = defaultHttpClient,
         playerVmOrActivityOverride: Any? = null,
-        apisOverride: List<Pair<SubtitleAPI, AuthData?>>? = null
+        apisOverride: List<Pair<SubtitleAPI, AuthData?>>? = null,
+        seasonNumber: Int? = null,
+        episodeNumber: Int? = null
     ): FallbackDiscoveryResult {
         // Tier B1: Check if player already has EMBEDDED_IN_VIDEO target-language track
         val embeddedTarget = hasEmbeddedTargetLanguageTrack(targetLang, playerVmOrActivityOverride)
@@ -894,11 +903,17 @@ object StreamSubtitleExtractor {
                 sourcePriorityMode = sourcePriorityMode,
                 customPriorityList = customPriorityList,
                 apisOverride = apisOverride,
-                timeoutMs = 4000L
+                timeoutMs = 4000L,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber
             )
         }
 
         return FallbackDiscoveryResult.NoneFound
+    }
+
+    private fun logI(tag: String, msg: String) {
+        try { Log.i(tag, msg) } catch (_: Throwable) { println("[$tag] [INFO] $msg") }
     }
 
     private fun logW(tag: String, msg: String) {

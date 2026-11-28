@@ -187,6 +187,24 @@ object AITranslatorLocalServer {
         return registerSubtitle(file)
     }
 
+    /**
+     * True when the URL points at this instance's own loopback endpoint (paths under /sub/).
+     * Peer extensions (Kitsunekko) run their own ServerSocket on a different port and must NOT match.
+     */
+    fun isOwnSubtitleUrl(url: String): Boolean {
+        val port = listeningPort
+        if (port <= 0) return false
+        val trimmed = url.trim()
+        if (trimmed.isEmpty()) return false
+        val prefix = when {
+            trimmed.startsWith("http://127.0.0.1:$port/", ignoreCase = true) -> "http://127.0.0.1:$port/"
+            trimmed.startsWith("http://localhost:$port/", ignoreCase = true) -> "http://localhost:$port/"
+            else -> return false
+        }
+        val path = trimmed.substring(prefix.length).substringBefore("?")
+        return path.startsWith("sub/")
+    }
+
     private fun ensureRunning() {
         if (!isRunning) {
             start(storedContext)

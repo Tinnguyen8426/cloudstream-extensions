@@ -7,6 +7,8 @@ import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.subtitles.ai.config.TranslatorConfig
 import com.lagradost.cloudstream3.subtitles.ai.hook.AITranslatorHook
 import com.lagradost.cloudstream3.subtitles.ai.server.AITranslatorLocalServer
+import com.lagradost.cloudstream3.subtitles.ai.ui.ManualTranslationButton
+import com.lagradost.cloudstream3.subtitles.ai.ui.TranslationProgressHUD
 import kotlinx.coroutines.*
 
 /**
@@ -24,10 +26,12 @@ class AITranslatorPlugin : Plugin() {
     companion object {
         private const val TAG = "AITranslatorPlugin"
         private const val HOIST_POLLING_INTERVAL_MS = 3000L
+        private const val MANUAL_BUTTON_POLL_INTERVAL_MS = 1000L
     }
 
     private val pluginScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var hookPollingJob: Job? = null
+    private var manualButtonJob: Job? = null
 
     override fun load(context: Context) {
         logI(TAG, "Initializing AI Subtitle Translator Plugin...")
@@ -75,6 +79,19 @@ class AITranslatorPlugin : Plugin() {
                 delay(HOIST_POLLING_INTERVAL_MS)
             }
         }
+
+        // 6. Manual-mode overlay button driver (1s; no-ops outside manual mode)
+        manualButtonJob = pluginScope.launch {
+            while (isActive) {
+                try {
+                    ManualTranslationButton.sync()
+                } catch (e: Throwable) {
+                    if (e is CancellationException) throw e
+                    logW(TAG, "Manual button sync error: ${e.message}")
+                }
+                delay(MANUAL_BUTTON_POLL_INTERVAL_MS)
+            }
+        }
     }
 
     override fun beforeUnload() {
@@ -83,6 +100,14 @@ class AITranslatorPlugin : Plugin() {
         // 1. Cancel background polling and active plugin coroutines
         hookPollingJob?.cancel()
         hookPollingJob = null
+        manualButtonJob?.cancel()
+        manualButtonJob = null
+        try {
+            ManualTranslationButton.detach()
+        } catch (_: Throwable) {}
+        try {
+            TranslationProgressHUD.dismiss()
+        } catch (_: Throwable) {}
         try {
             pluginScope.cancel()
         } catch (_: Throwable) {}
