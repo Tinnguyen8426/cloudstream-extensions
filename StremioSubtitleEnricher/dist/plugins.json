@@ -2,14 +2,14 @@
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/StremioSubEnricher.cs3",
         "status": 1,
-        "version": 5,
+        "version": 6,
         "name": "Stremio Subtitle Enricher",
         "internalName": "StremioSubEnricher",
         "authors": [
             "Stremio Subtitle Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề đa ngôn ngữ từ Kitsu, OpenSubtitles v3, SubSense (SubDL/AnimeTosho/YIFY/…) và Cinemeta vào CloudStream",
-        "fileSize": 75902,
+        "fileSize": 76732,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "en",
         "tvTypes": [
@@ -21,6 +21,6 @@
         ],
         "iconUrl": "https://stremio.com/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-60e59387196fbf1e47b3b18012cbbd6bb62997483dbbe5c62c86d51388f80ed6"
+        "fileHash": "sha256-24fce862ca222a1d0b6ff2b08ab904168125ea5dd56f6ff0aab72d3a89e302ad"
     }
 ]

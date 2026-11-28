@@ -2,14 +2,14 @@
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/StremioSubEnricher.cs3",
         "status": 1,
-        "version": 5,
+        "version": 6,
         "name": "Stremio Subtitle Enricher",
         "internalName": "StremioSubEnricher",
         "authors": [
             "Stremio Subtitle Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề đa ngôn ngữ từ Kitsu, OpenSubtitles v3, SubSense (SubDL/AnimeTosho/YIFY/…) và Cinemeta vào CloudStream",
-        "fileSize": 75902,
+        "fileSize": 76732,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "en",
         "tvTypes": [
@@ -21,19 +21,19 @@
         ],
         "iconUrl": "https://stremio.com/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-60e59387196fbf1e47b3b18012cbbd6bb62997483dbbe5c62c86d51388f80ed6"
+        "fileHash": "sha256-24fce862ca222a1d0b6ff2b08ab904168125ea5dd56f6ff0aab72d3a89e302ad"
     },
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/KitsunekkoEnricher.cs3",
         "status": 1,
-        "version": 4,
+        "version": 5,
         "name": "Kitsunekko Japanese Subtitle Enricher",
         "internalName": "KitsunekkoEnricher",
         "authors": [
             "Kitsunekko Japanese Subtitle Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề tiếng Nhật (.ass, .srt, .zip) từ Kitsunekko vào CloudStream",
-        "fileSize": 81517,
+        "fileSize": 82314,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "ja",
         "tvTypes": [
@@ -43,19 +43,19 @@
         ],
         "iconUrl": "https://kitsunekko.net/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-d25e64bb8658dad658ae136152b3a1bc62c0081d71c17d77fb271e4d3e15074d"
+        "fileHash": "sha256-ced0f806245e30ffd58ca3603dd02c92c3d0718fb3ec0a91611544ea3e47bd6d"
     },
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/Anime47Enricher.cs3",
         "status": 1,
-        "version": 6,
+        "version": 7,
         "name": "Anime47 Subtitle Enricher",
         "internalName": "Anime47Enricher",
         "authors": [
             "Anime47 Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề Tiếng Việt (softsub) từ Anime47 vào CloudStream (tương thích hoàn hảo với Torrentio, TorraStream, StremioX, AnimePahe...)",
-        "fileSize": 62231,
+        "fileSize": 63144,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "vi",
         "tvTypes": [
@@ -65,19 +65,19 @@
         ],
         "iconUrl": "https://anime47.best/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-2f528f2cc0211ed2b46f4cde9244eb83183037ee6619e600e1d10a1568c29a4a"
+        "fileHash": "sha256-26b915a6489a0f7d67950c40ee01244df07a49d79c96c01de935e4858d2e0a38"
     },
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/AiSubtitleTranslator.cs3",
         "status": 1,
-        "version": 17,
+        "version": 18,
         "name": "AI Subtitle Translator",
         "internalName": "AiSubtitleTranslator",
         "authors": [
             "AI Subtitle Translator"
         ],
         "description": "Dịch phụ đề phim tự động bằng AI (Gemini, OpenAI, Claude) trực tiếp trên CloudStream với độ trễ 0ms và hỗ trợ xử lý ngữ cảnh đa ngôn ngữ",
-        "fileSize": 266211,
+        "fileSize": 266991,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "vi",
         "tvTypes": [
@@ -91,6 +91,6 @@
         ],
         "iconUrl": "https://translate.google.com/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-a22fdafeb8e764602b141d80241056eb157c27bd12e61d302b7fd2a9378e905e"
+        "fileHash": "sha256-7be1adffef97ff99cb7bd6538ac3c5d57a761bc100828c2d38b8a488da851d0d"
     }
 ]

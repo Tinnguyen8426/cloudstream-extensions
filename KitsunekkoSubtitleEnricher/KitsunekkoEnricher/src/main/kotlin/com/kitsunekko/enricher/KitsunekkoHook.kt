@@ -47,6 +47,7 @@ object KitsunekkoHook {
 
     private const val TAG = "KitsunekkoHook"
     private val hookedProviderNames = ConcurrentHashMap.newKeySet<String>()
+    @Volatile private var lastLoggedBlankUrlProviders: List<String> = emptyList()
     private var observerJob: Job? = null
     var appContext: Context? = null
 
@@ -257,6 +258,14 @@ object KitsunekkoHook {
         } catch (_: Throwable) {}
     }
 
+    /**
+     * Stable partition so providers with a real mainUrl precede blank-mainUrl providers
+     * (e.g. StremioX("")). getApiFromUrlNull matches with url.startsWith(mainUrl), and a
+     * blank mainUrl matches every URL, hijacking resolution for links like AniList sync items.
+     */
+    fun prioritizeDomainProviders(providers: List<MainAPI>): List<MainAPI> =
+        providers.filter { it.mainUrl.isNotBlank() } + providers.filter { it.mainUrl.isBlank() }
+
     fun detachHooks() {
         observerJob?.cancel()
         observerJob = null
@@ -316,6 +325,16 @@ object KitsunekkoHook {
 
                         syncPluginMapping(enriched)
                     }
+                }
+
+                val ordered = prioritizeDomainProviders(allProviders.toList())
+                for (i in ordered.indices) {
+                    if (allProviders[i] !== ordered[i]) allProviders[i] = ordered[i]
+                }
+                val blankNames = ordered.filter { it.mainUrl.isBlank() }.map { it.name }.distinct()
+                if (blankNames.isNotEmpty() && blankNames != lastLoggedBlankUrlProviders) {
+                    lastLoggedBlankUrlProviders = blankNames
+                    Log.i(TAG, "URL-resolution priority: blank-mainUrl providers moved last: $blankNames")
                 }
             }
             deduplicateApis()

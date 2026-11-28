@@ -20,7 +20,7 @@ plugins = [
     {
         "url": f"{BASE_URL}/StremioSubEnricher.cs3",
         "status": 1,
-        "version": 5,
+        "version": 6,
         "name": "Stremio Subtitle Enricher",
         "internalName": "StremioSubEnricher",
         "authors": [
@@ -44,7 +44,7 @@ plugins = [
     {
         "url": f"{BASE_URL}/KitsunekkoEnricher.cs3",
         "status": 1,
-        "version": 4,
+        "version": 5,
         "name": "Kitsunekko Japanese Subtitle Enricher",
         "internalName": "KitsunekkoEnricher",
         "authors": [
@@ -66,7 +66,7 @@ plugins = [
     {
         "url": f"{BASE_URL}/Anime47Enricher.cs3",
         "status": 1,
-        "version": 6,
+        "version": 7,
         "name": "Anime47 Subtitle Enricher",
         "internalName": "Anime47Enricher",
         "authors": [
@@ -88,7 +88,7 @@ plugins = [
     {
         "url": f"{BASE_URL}/AiSubtitleTranslator.cs3",
         "status": 1,
-        "version": 17,
+        "version": 18,
         "name": "AI Subtitle Translator",
         "internalName": "AiSubtitleTranslator",
         "authors": [

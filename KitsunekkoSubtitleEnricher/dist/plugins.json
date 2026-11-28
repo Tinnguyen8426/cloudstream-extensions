@@ -2,14 +2,14 @@
     {
         "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/KitsunekkoEnricher.cs3",
         "status": 1,
-        "version": 4,
+        "version": 5,
         "name": "Kitsunekko Japanese Subtitle Enricher",
         "internalName": "KitsunekkoEnricher",
         "authors": [
             "Kitsunekko Japanese Subtitle Enricher"
         ],
         "description": "Tự động trích xuất và nhúng phụ đề tiếng Nhật (.ass, .srt, .zip) từ Kitsunekko vào CloudStream",
-        "fileSize": 81517,
+        "fileSize": 82314,
         "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
         "language": "ja",
         "tvTypes": [
@@ -19,6 +19,6 @@
         ],
         "iconUrl": "https://kitsunekko.net/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-d25e64bb8658dad658ae136152b3a1bc62c0081d71c17d77fb271e4d3e15074d"
+        "fileHash": "sha256-ced0f806245e30ffd58ca3603dd02c92c3d0718fb3ec0a91611544ea3e47bd6d"
     }
 ]
