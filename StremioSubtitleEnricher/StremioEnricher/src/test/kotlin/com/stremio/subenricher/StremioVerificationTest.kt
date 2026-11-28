@@ -40,6 +40,12 @@ object StremioVerificationTest {
         testLanguageNormalizationAndFilter()
         testLruCaches()
         testHookCoexistenceLogic()
+        testMetaImdbFields()
+        testKitsuResolution()
+        testCatalogFallbackChain()
+        testNoLegacyCatalogRef()
+        testSubsenseUrl()
+        testSubsenseParse()
 
         println("============================================================")
         println(" TEST RESULTS: $passed passed, $failed failed")
@@ -273,5 +279,190 @@ object StremioVerificationTest {
 
         val anime47WrappedName = "Torrentio" // Anime47 preserves baseApi.name
         assertTrue("Anime47 wrapped provider name does not contain Stremio", !anime47WrappedName.contains("Stremio", ignoreCase = true))
+    }
+
+    private fun testMetaImdbFields() {
+        println("\n--- Testing Enriched StremioMeta Fields ---")
+
+        val json = """
+            {
+                "metas": [
+                    {
+                        "id": "kitsu:46474",
+                        "type": "anime",
+                        "name": "Sousou no Frieren",
+                        "imdb_id": "tt22248376",
+                        "kitsu_id": 46474,
+                        "aliases": ["Frieren: Beyond Journey's End", "Frieren at the Funeral"]
+                    }
+                ]
+            }
+        """.trimIndent()
+
+        val cat = Gson().fromJson(json, StremioCatalog::class.java)
+        val meta = cat.metas[0]
+        assertEquals("meta imdbId parsed", "tt22248376", meta.imdbId)
+        assertEquals("meta kitsuId parsed", "46474", meta.kitsuId)
+        assertEquals("meta aliases count", 2, meta.aliases?.size)
+
+        // Runtime uses Jackson first; verify annotation wiring via constructor parameter reflection
+        // (Kotlin applies @JsonProperty to constructor params, which jackson-module-kotlin reads)
+        val annotatedCtor = StremioMeta::class.java.declaredConstructors.firstOrNull { ctor ->
+            ctor.parameterAnnotations.any { arr -> arr.any { it is com.fasterxml.jackson.annotation.JsonProperty } }
+        }
+        val propNames = annotatedCtor?.parameterAnnotations
+            ?.flatMap { it.toList() }
+            ?.filterIsInstance<com.fasterxml.jackson.annotation.JsonProperty>()
+            ?.map { it.value }
+            ?: emptyList()
+        assertTrue("imdbId has @JsonProperty(imdb_id)", "imdb_id" in propNames)
+        assertTrue("kitsuId has @JsonProperty(kitsu_id)", "kitsu_id" in propNames)
+        assertTrue("aliases has @JsonProperty(aliases)", "aliases" in propNames)
+    }
+
+    private fun testKitsuResolution() {
+        println("\n--- Testing Kitsu Catalog Resolution ---")
+
+        val trendingJson = """
+            {
+                "metas": [
+                    {
+                        "id": "kitsu:46474",
+                        "type": "anime",
+                        "name": "Sousou no Frieren",
+                        "releaseInfo": "2023-2024",
+                        "imdb_id": "tt22248376",
+                        "aliases": ["Frieren: Beyond Journey's End"]
+                    },
+                    {
+                        "id": "kitsu:99999",
+                        "type": "anime",
+                        "name": "Unrelated Show",
+                        "releaseInfo": "2019"
+                    }
+                ]
+            }
+        """.trimIndent()
+
+        StremioSubScraper.clearCache()
+        val res = StremioSubScraper.parseKitsuResolution(trendingJson, listOf("Frieren: Beyond Journey's End"))
+        assertTrue("kitsu resolution found via alias", res != null)
+        assertEquals("kitsu id resolved", "46474", res?.kitsuId)
+        assertEquals("imdb id carried from meta", "tt22248376", res?.imdbId)
+
+        val empty = StremioSubScraper.parseKitsuResolution("{\"metas\":[]}", listOf("Frieren"))
+        assertEquals("empty catalog -> null", null, empty)
+
+        val unrelated = StremioSubScraper.parseKitsuResolution(trendingJson, listOf("One Piece"))
+        assertEquals("unrelated title -> null", null, unrelated)
+
+        val nameMatch = StremioSubScraper.parseKitsuResolution(trendingJson, listOf("Sousou no Frieren"))
+        assertEquals("exact name match score", 100, nameMatch?.score)
+    }
+
+    private fun testCatalogFallbackChain() {
+        println("\n--- Testing Kitsu Catalog Fallback Chain ---")
+
+        assertEquals(
+            "fallback catalogs order",
+            listOf("kitsu-anime-trending", "kitsu-anime-popular"),
+            StremioSubScraper.KITSU_SEARCH_CATALOGS
+        )
+        val url = StremioSubScraper.kitsuCatalogSearchUrl("kitsu-anime-trending", "Frieren")
+        assertTrue("catalog url uses trending route", url.contains("kitsu-anime-trending"))
+        assertTrue("catalog url encodes search", url.contains("search=Frieren.json"))
+        assertTrue("catalog url stays on kitsu host", url.startsWith("https://anime-kitsu.strem.fun/catalog/anime/"))
+        assertTrue("catalog url has no legacy route", !url.contains("kitsu-search"))
+    }
+
+    private fun testNoLegacyCatalogRef() {
+        println("\n--- Testing No Legacy Kitsu Catalog References ---")
+
+        val candidates = listOf(
+            "StremioEnricher/src/main/kotlin/com/stremio/subenricher/StremioSubScraper.kt",
+            "../StremioEnricher/src/main/kotlin/com/stremio/subenricher/StremioSubScraper.kt"
+        )
+        val sourceFile = candidates.map { java.io.File(it) }.firstOrNull { it.exists() }
+        if (sourceFile == null) {
+            println("  [SKIP] StremioSubScraper.kt not found from working directory")
+            return
+        }
+        val content = sourceFile.readText()
+        assertTrue("source has no kitsu-search route", !content.contains("kitsu-search"))
+        assertTrue("source uses fallback catalogs", content.contains("kitsu-anime-trending"))
+    }
+
+    private fun testSubsenseUrl() {
+        println("\n--- Testing SubSense Configuration URL ---")
+
+        assertEquals("vi_en -> [vi, en]", listOf("vi", "en"), StremioSubScraper.subsenseLanguages(LanguageFilterMode.VI_EN, emptySet()))
+        assertEquals("vi_only -> [vi]", listOf("vi"), StremioSubScraper.subsenseLanguages(LanguageFilterMode.VI_ONLY, emptySet()))
+        assertEquals("en_only -> [en]", listOf("en"), StremioSubScraper.subsenseLanguages(LanguageFilterMode.EN_ONLY, emptySet()))
+        assertEquals(
+            "all mode capped to 5",
+            listOf("vi", "en", "ja", "zh", "ko"),
+            StremioSubScraper.subsenseLanguages(LanguageFilterMode.ALL, emptySet())
+        )
+
+        val custom = StremioSubScraper.subsenseLanguages(
+            LanguageFilterMode.CUSTOM,
+            setOf("vi", "eng", "ja", "ko", "zh", "th", "fr")
+        )
+        assertEquals("custom filters invalid codes and caps 5", listOf("vi", "ja", "ko", "zh", "th"), custom)
+
+        val base = StremioSubScraper.buildSubsenseBase(listOf("vi", "en"))
+        assertTrue("subsense base host", base.startsWith("https://subsense.nepiraw.com/csstream1-"))
+        assertTrue(
+            "subsense config encoded exactly",
+            base.endsWith("%7B%22languages%22%3A%5B%22vi%22%2C%22en%22%5D%7D")
+        )
+        val dirty = StremioSubScraper.buildSubsenseBase(listOf("vi", "bad!", "en"))
+        assertTrue(
+            "subsense drops invalid codes",
+            dirty.endsWith("%7B%22languages%22%3A%5B%22vi%22%2C%22en%22%5D%7D")
+        )
+    }
+
+    private fun testSubsenseParse() {
+        println("\n--- Testing SubSense Response Parsing ---")
+
+        val json = """
+            {
+                "subtitles": [
+                    {
+                        "id": "subsense-srt-opensubtitles-eng-0",
+                        "url": "https://dl.opensubtitles.org/en/download/file/1958299561.srt",
+                        "lang": "eng",
+                        "label": "OpenSubtitles · [SRT] · Frieren.S01E01.en.srt"
+                    },
+                    {
+                        "id": "subsense-srt-subdl-vie-1",
+                        "url": "https://dl.subdl.com/subtitle/example-vi.srt",
+                        "lang": "vie",
+                        "label": "SubDL · [SRT] · Frieren - 01.srt"
+                    },
+                    {
+                        "id": "subsense-srt-animetosho-jpn-2",
+                        "url": "https://example.com/frieren-01.ass",
+                        "lang": "jpn",
+                        "label": "AnimeTosho · Japanese"
+                    }
+                ]
+            }
+        """.trimIndent()
+
+        val parsed = Gson().fromJson(json, StremioSubtitles::class.java)
+        assertEquals("subsense subs parsed", 3, parsed.subtitles.size)
+
+        val en = StremioSubScraper.normalizeLanguage(parsed.subtitles[0].lang)
+        val vi = StremioSubScraper.normalizeLanguage(parsed.subtitles[1].lang)
+        val ja = StremioSubScraper.normalizeLanguage(parsed.subtitles[2].lang)
+        assertEquals("subsense eng -> en", "en", en.first)
+        assertEquals("subsense vie -> vi", "vi", vi.first)
+        assertEquals("subsense jpn -> ja", "ja", ja.first)
+
+        assertTrue("vi_en keeps subsense vi", StremioSubScraper.isLanguageAllowed(vi.first, LanguageFilterMode.VI_EN))
+        assertTrue("vi_en keeps subsense en", StremioSubScraper.isLanguageAllowed(en.first, LanguageFilterMode.VI_EN))
+        assertTrue("vi_en drops subsense ja", !StremioSubScraper.isLanguageAllowed(ja.first, LanguageFilterMode.VI_EN))
     }
 }

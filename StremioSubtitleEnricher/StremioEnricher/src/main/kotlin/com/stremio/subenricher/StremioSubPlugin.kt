@@ -4,8 +4,10 @@ import android.app.AlertDialog
 import android.content.Context
 import android.content.SharedPreferences
 import android.text.InputType
+import android.util.Log
 import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioButton
@@ -33,6 +35,11 @@ class StremioSubPlugin : Plugin() {
 
         // 2. Attach dynamic hooks to external providers
         StremioSubHook.attachHooks()
+
+        Log.i(
+            "StremioSubPlugin",
+            "StremioSubEnricher loaded (mode=${StremioConfig.langMode}, addons=${StremioConfig.getCustomAddonsList().size}, kitsu=${StremioSubScraper.isKitsuEnabled}, os=${StremioSubScraper.isOpenSubtitlesEnabled}, subsense=${StremioSubScraper.isSubSenseEnabled})"
+        )
 
         // 3. Register Settings UI dialog
         openSettings = { activityContext ->
@@ -62,7 +69,7 @@ class StremioSubPlugin : Plugin() {
 
         // Description
         val descView = TextView(context).apply {
-            text = "Stremio Subtitle Enricher: Tự động trích xuất và nhúng phụ đề đa ngôn ngữ từ Kitsu, OpenSubtitles v3, Cinemeta và Custom Addons vào CloudStream."
+            text = "Stremio Subtitle Enricher: Tự động trích xuất và nhúng phụ đề đa ngôn ngữ từ Kitsu, OpenSubtitles v3, SubSense (SubDL/AnimeTosho/YIFY/…), Cinemeta và Custom Addons vào CloudStream."
             textSize = 14f
             setPadding(0, 0, 0, (12 * density).toInt())
         }
@@ -139,6 +146,14 @@ class StremioSubPlugin : Plugin() {
         }
         layout.addView(addonInput)
 
+        val subsenseCheck = CheckBox(context).apply {
+            text = "Bật SubSense (đa nguồn: SubDL, AnimeTosho, YIFY, Subf2m, Podnapisi…)"
+            isChecked = StremioConfig.subsenseEnabled
+            textSize = 13f
+            setPadding(0, (12 * density).toInt(), 0, 0)
+        }
+        layout.addView(subsenseCheck)
+
         // Section 3: Connection Test Button
         val testButton = Button(context).apply {
             text = "Kiểm tra kết nối Stremio (Ping Test)"
@@ -164,7 +179,7 @@ class StremioSubPlugin : Plugin() {
                 val customLangs = customLangInput.text.toString().trim()
                 val addons = addonInput.text.toString().trim()
 
-                StremioConfig.save(context, selectedMode, customLangs, addons)
+                StremioConfig.save(context, selectedMode, customLangs, addons, subsenseCheck.isChecked)
                 Toast.makeText(context, "Đã lưu cài đặt Stremio Subtitle Enricher!", Toast.LENGTH_SHORT).show()
                 dialog.dismiss()
             }
@@ -188,7 +203,8 @@ class StremioSubPlugin : Plugin() {
             // 1. Test Kitsu
             val kitsuStart = System.currentTimeMillis()
             val kitsuOk = try {
-                app.get("https://anime-kitsu.strem.fun/catalog/anime/kitsu-search/search=frieren.json", timeout = 5).use { it.isSuccessful }
+                val kitsuUrl = StremioSubScraper.kitsuCatalogSearchUrl(StremioSubScraper.KITSU_SEARCH_CATALOGS.first(), "frieren")
+                app.get(kitsuUrl, timeout = 5).use { it.isSuccessful }
             } catch (e: Throwable) { false }
             val kitsuTime = System.currentTimeMillis() - kitsuStart
             results.add(if (kitsuOk) "✓ Kitsu API: OK (${kitsuTime}ms)" else "✗ Kitsu API: Thất bại")
@@ -209,7 +225,15 @@ class StremioSubPlugin : Plugin() {
             val osTime = System.currentTimeMillis() - osStart
             results.add(if (osOk) "✓ OpenSubtitles v3: OK (${osTime}ms)" else "✗ OpenSubtitles v3: Thất bại")
 
-            // 4. Test Custom Addons
+            // 4. Test SubSense (configured addon URL)
+            val ssStart = System.currentTimeMillis()
+            val ssOk = try {
+                app.get("${StremioSubScraper.subsenseBaseUrl()}/manifest.json", timeout = 5).use { it.isSuccessful }
+            } catch (e: Throwable) { false }
+            val ssTime = System.currentTimeMillis() - ssStart
+            results.add(if (ssOk) "✓ SubSense: OK (${ssTime}ms)" else "✗ SubSense: Thất bại")
+
+            // 5. Test Custom Addons
             val customAddons = StremioConfig.getCustomAddonsList()
             for (addon in customAddons) {
                 val aStart = System.currentTimeMillis()
@@ -239,6 +263,7 @@ object StremioConfig {
     private const val KEY_LANG_MODE = "lang_mode"
     private const val KEY_CUSTOM_LANGS = "custom_langs"
     private const val KEY_CUSTOM_ADDONS = "custom_addons"
+    private const val KEY_SUBSENSE_ENABLED = "subsense_enabled"
 
     const val MODE_ALL = 0
     const val MODE_VI_EN = 1
@@ -252,31 +277,36 @@ object StremioConfig {
         private set
     var customAddonsRaw: String = ""
         private set
+    var subsenseEnabled: Boolean = true
+        private set
 
     fun init(context: Context) {
         val prefs = getPrefs(context)
         langMode = prefs.getInt(KEY_LANG_MODE, MODE_VI_EN)
         customLangs = prefs.getString(KEY_CUSTOM_LANGS, "vi, en") ?: "vi, en"
         customAddonsRaw = prefs.getString(KEY_CUSTOM_ADDONS, "") ?: ""
+        subsenseEnabled = prefs.getBoolean(KEY_SUBSENSE_ENABLED, true)
         applyToScraper()
     }
 
-    fun save(context: Context, mode: Int, customL: String, addons: String) {
+    fun save(context: Context, mode: Int, customL: String, addons: String, subsense: Boolean = true) {
         langMode = mode
         customLangs = customL
         customAddonsRaw = addons
+        subsenseEnabled = subsense
 
         getPrefs(context).edit().apply {
             putInt(KEY_LANG_MODE, mode)
             putString(KEY_CUSTOM_LANGS, customL)
             putString(KEY_CUSTOM_ADDONS, addons)
+            putBoolean(KEY_SUBSENSE_ENABLED, subsense)
             apply()
         }
         applyToScraper()
     }
 
     fun resetToDefaults(context: Context) {
-        save(context, MODE_VI_EN, "vi, en", "")
+        save(context, MODE_VI_EN, "vi, en", "", true)
     }
 
     private fun applyToScraper() {
@@ -294,6 +324,7 @@ object StremioConfig {
             .filter { it.isNotBlank() }
             .toSet()
         StremioSubScraper.customAddonUrls = getCustomAddonsList()
+        StremioSubScraper.isSubSenseEnabled = subsenseEnabled
     }
 
     fun isLanguageAllowed(iso2or3: String): Boolean {

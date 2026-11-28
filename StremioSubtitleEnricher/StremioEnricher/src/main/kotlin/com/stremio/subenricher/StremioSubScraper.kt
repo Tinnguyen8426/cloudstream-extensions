@@ -10,6 +10,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import java.net.URLEncoder
 import java.util.Collections
 import java.util.LinkedHashMap
@@ -57,6 +58,14 @@ object StremioSubScraper {
     private const val KITSU_BASE = "https://anime-kitsu.strem.fun"
     private const val CINEMETA_BASE = "https://v3-cinemeta.strem.io"
     private const val OPENSUBTITLES_BASE = "https://opensubtitles-v3.strem.io"
+    private const val SUSENSE_BASE = "https://subsense.nepiraw.com"
+    private const val SUSENSE_INSTANCE = "csstream1" // 8 ký tự [a-z0-9] theo pattern /^[a-z0-9]{8}-(.+)$/
+
+    // The legacy search catalog endpoint was removed upstream (HTTP 404); these still support search=.
+    val KITSU_SEARCH_CATALOGS = listOf("kitsu-anime-trending", "kitsu-anime-popular")
+
+    fun kitsuCatalogSearchUrl(catalogId: String, title: String): String =
+        "$KITSU_BASE/catalog/anime/$catalogId/search=${URLEncoder.encode(title, "UTF-8")}.json"
 
     // Configuration properties managed by StremioSubPlugin & StremioConfig
     @Volatile var activeLanguageFilter: String = LanguageFilterMode.VI_EN
@@ -64,6 +73,7 @@ object StremioSubScraper {
     @Volatile var customAddonUrls: List<String> = emptyList()
     @Volatile var isKitsuEnabled: Boolean = true
     @Volatile var isOpenSubtitlesEnabled: Boolean = true
+    @Volatile var isSubSenseEnabled: Boolean = true
 
     // =========================================================================
     // 1. Thread-Safe Dual LRU Memory Caches (32 Subtitles, 24 IDs)
@@ -236,48 +246,123 @@ object StremioSubScraper {
     }
 
     // =========================================================================
+    // 3b. SubSense Aggregator URL Construction
+    // =========================================================================
+
+    /**
+     * Maps the current language filter config to a SubSense languages list (max 5, enforced by the addon).
+     */
+    fun subsenseLanguages(mode: String, customCodes: Set<String>): List<String> {
+        return when (mode) {
+            LanguageFilterMode.VI_EN -> listOf("vi", "en")
+            LanguageFilterMode.VI_ONLY -> listOf("vi")
+            LanguageFilterMode.EN_ONLY -> listOf("en")
+            LanguageFilterMode.CUSTOM -> {
+                val valid = customCodes.map { it.trim().lowercase() }
+                    .filter { it.matches(Regex("^[a-z]{2}$")) }
+                    .distinct()
+                if (valid.size > 5) {
+                    Log.w(TAG, "SubSense supports max 5 languages, truncating ${valid.size} -> 5")
+                }
+                valid.take(5).ifEmpty { listOf("vi", "en") }
+            }
+            else -> listOf("vi", "en", "ja", "zh", "ko") // ALL: SubSense caps at 5
+        }
+    }
+
+    /**
+     * Builds a configured SubSense addon base URL:
+     * https://subsense.nepiraw.com/{instance}-{encodeURIComponent({"languages":[...]})}
+     */
+    fun buildSubsenseBase(languages: List<String>): String {
+        val safe = languages.map { it.trim().lowercase() }
+            .filter { it.matches(Regex("^[a-z]{2}$")) }
+            .distinct()
+            .ifEmpty { listOf("vi", "en") }
+        val json = safe.joinToString(prefix = "{\"languages\":[", separator = ",", postfix = "]}") { "\"$it\"" }
+        return "$SUSENSE_BASE/$SUSENSE_INSTANCE-${URLEncoder.encode(json, "UTF-8")}"
+    }
+
+    fun subsenseBaseUrl(): String =
+        buildSubsenseBase(subsenseLanguages(activeLanguageFilter, customLanguageCodes))
+
+    // =========================================================================
     // 4. Kitsu Anime ID Resolution & Subtitle Fetching
     // =========================================================================
 
-    suspend fun resolveKitsuId(titles: List<String>): String? {
+    data class KitsuResolution(val kitsuId: String, val imdbId: String? = null, val score: Int = 0)
+
+    /**
+     * Pure parser for Kitsu catalog search responses. Scores metas against the query titles
+     * using both the canonical name and the addon-provided aliases.
+     */
+    fun parseKitsuResolution(json: String, titles: List<String>): KitsuResolution? {
+        val nonBlank = titles.map { it.trim() }.filter { it.isNotBlank() }
+        if (nonBlank.isEmpty()) return null
+        val catalog = safeParseJson<StremioCatalog>(json) ?: return null
+
+        var best: KitsuResolution? = null
+        for (meta in catalog.metas) {
+            val mid = meta.id ?: continue
+            if (!mid.startsWith("kitsu:")) continue
+            val name = meta.name ?: continue
+            val nameScore = StremioSubMatcher.bestMatchScore(name, nonBlank)
+            val aliasScore = meta.aliases.orEmpty()
+                .filter { it.isNotBlank() }
+                .maxOfOrNull { StremioSubMatcher.bestMatchScore(it, nonBlank) } ?: 0
+            val score = maxOf(nameScore, aliasScore)
+            if (score >= 40 && (best == null || score > best.score)) {
+                best = KitsuResolution(
+                    kitsuId = mid.substringAfter(':'),
+                    imdbId = meta.imdbId?.trim()?.takeIf { it.startsWith("tt") },
+                    score = score
+                )
+            }
+        }
+        return best
+    }
+
+    suspend fun resolveKitsuId(titles: List<String>): KitsuResolution? {
         val nonBlank = titles.map { it.trim() }.filter { it.isNotBlank() }
         if (nonBlank.isEmpty()) return null
 
         for (candidate in nonBlank) {
             val key = candidate.lowercase()
             val cached = synchronized(kitsuIdCache) { kitsuIdCache[key] }
-            if (cached != null) return cached
+            if (cached != null) {
+                val cachedImdb = synchronized(imdbIdCache) { imdbIdCache[key] }
+                return KitsuResolution(cached, cachedImdb, 100)
+            }
         }
 
         val primaryTitle = nonBlank.first()
-        val encoded = URLEncoder.encode(primaryTitle, "UTF-8")
-        val url = "$KITSU_BASE/catalog/anime/kitsu-search/search=$encoded.json"
-
-        val rawJson = getWithRetry(url) ?: return null
-        val catalog = safeParseJson<StremioCatalog>(rawJson) ?: return null
-        val metas = catalog.metas
-
-        var bestId: String? = null
-        var bestScore = 0
-
-        for (meta in metas) {
-            val mid = meta.id ?: continue
-            if (!mid.startsWith("kitsu:")) continue
-            val name = meta.name ?: continue
-            val score = StremioSubMatcher.bestMatchScore(name, nonBlank)
-            if (score > bestScore && score >= 40) {
-                bestScore = score
-                bestId = mid.substringAfter(':')
+        var resolution: KitsuResolution? = null
+        for (catalogId in KITSU_SEARCH_CATALOGS) {
+            val url = kitsuCatalogSearchUrl(catalogId, primaryTitle)
+            val rawJson = getWithRetry(url)
+            if (rawJson == null) {
+                Log.d(TAG, "Kitsu catalog '$catalogId' miss for '$primaryTitle' (no response)")
+                continue
             }
+            val parsed = parseKitsuResolution(rawJson, nonBlank)
+            if (parsed != null) {
+                resolution = parsed
+                Log.d(TAG, "Resolved Kitsu ID: '$primaryTitle' -> kitsu:${parsed.kitsuId} (score=${parsed.score}, catalog=$catalogId, imdb=${parsed.imdbId})")
+                break
+            }
+            Log.d(TAG, "Kitsu catalog '$catalogId' no qualified match for '$primaryTitle'")
         }
 
-        if (bestId != null) {
-            Log.d(TAG, "Resolved Kitsu ID: '$primaryTitle' -> kitsu:$bestId (score=$bestScore)")
-            synchronized(kitsuIdCache) {
-                kitsuIdCache[primaryTitle.lowercase()] = bestId
+        val res = resolution ?: return null
+        val key = primaryTitle.lowercase()
+        synchronized(kitsuIdCache) { kitsuIdCache[key] = res.kitsuId }
+        val resImdb = res.imdbId
+        if (resImdb != null && res.score >= 60) {
+            synchronized(imdbIdCache) {
+                if (!imdbIdCache.containsKey(key)) imdbIdCache[key] = resImdb
             }
         }
-        return bestId
+        return res
     }
 
     suspend fun fetchKitsuSubtitles(
@@ -429,7 +514,8 @@ object StremioSubScraper {
         addonBaseUrl: String,
         imdbId: String,
         season: Int?,
-        episode: Int?
+        episode: Int?,
+        sourceName: String = "custom_addon"
     ): List<StremioSubtitleTrack> {
         val sanitizedBase = addonBaseUrl.trim().trimEnd('/')
         if (!sanitizedBase.startsWith("http://") && !sanitizedBase.startsWith("https://")) {
@@ -458,7 +544,7 @@ object StremioSubScraper {
                 url = subUrl,
                 lang = displayLabel,
                 langCode = code,
-                sourceName = "custom_addon",
+                sourceName = sourceName,
                 title = sub.title ?: sub.subtitleFileName,
                 episode = sub.episode ?: episode
             )
@@ -468,7 +554,7 @@ object StremioSubScraper {
         synchronized(resultCache) {
             resultCache[cacheKey] = results
         }
-        Log.d(TAG, "Fetched ${results.size} subtitles from Addon: $sanitizedBase")
+        Log.d(TAG, "Fetched ${results.size} subtitles from Addon ($sourceName): $sanitizedBase")
         return results
     }
 
@@ -513,6 +599,19 @@ object StremioSubScraper {
             }
         }
 
+        val kitsuTask = if (isKitsuEnabled) {
+            async(Dispatchers.IO) {
+                try {
+                    resolveKitsuId(queryTitles)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    logError(e)
+                    null
+                }
+            }
+        } else null
+
         val tasks = mutableListOf<kotlinx.coroutines.Deferred<Unit>>()
 
         // Pipeline 1: Kitsu Anime Subtitles
@@ -530,12 +629,12 @@ object StremioSubScraper {
                 })
             }
 
-            // 1b. Kitsu ID keyword lookup
+            // 1b. Kitsu ID keyword lookup (shared resolution task also feeds IMDb fallback)
             tasks.add(async(Dispatchers.IO) {
                 try {
-                    val kitsuId = resolveKitsuId(queryTitles)
-                    if (kitsuId != null) {
-                        val tracks = fetchKitsuSubtitles("kitsu", kitsuId, epNum)
+                    val resolution = kitsuTask?.await()
+                    if (resolution != null) {
+                        val tracks = fetchKitsuSubtitles("kitsu", resolution.kitsuId, epNum)
                         tracks.forEach { processAndEmit(it) }
                     }
                 } catch (e: Throwable) {
@@ -545,31 +644,52 @@ object StremioSubScraper {
             })
         }
 
-        // Pipeline 2 & 3: OpenSubtitles v3 & Custom Addons via Cinemeta IMDb ID
-        if (isOpenSubtitlesEnabled || customAddonUrls.isNotEmpty()) {
+        // Pipeline 2 & 3: OpenSubtitles v3, SubSense & Custom Addons via resolved IMDb ID
+        if (isOpenSubtitlesEnabled || isSubSenseEnabled || customAddonUrls.isNotEmpty()) {
             tasks.add(async(Dispatchers.IO) {
                 try {
-                    val imdbId = resolveImdbId(queryTitles, year)
-                    if (imdbId != null) {
-                        coroutineScope {
-                            val subTasks = mutableListOf<kotlinx.coroutines.Deferred<Unit>>()
+                    var imdbId = resolveImdbId(queryTitles, year)
+                    if (imdbId == null) {
+                        imdbId = withTimeoutOrNull(2000) { kitsuTask?.await() }?.imdbId
+                    }
+                    val finalImdbId = imdbId ?: return@async
+                    coroutineScope {
+                        val subTasks = mutableListOf<kotlinx.coroutines.Deferred<Unit>>()
 
-                            if (isOpenSubtitlesEnabled) {
-                                subTasks.add(async(Dispatchers.IO) {
-                                    val tracks = fetchOpenSubtitles(imdbId, seasonNum, epNum)
-                                    tracks.forEach { processAndEmit(it) }
-                                })
-                            }
-
-                            for (addon in customAddonUrls) {
-                                subTasks.add(async(Dispatchers.IO) {
-                                    val tracks = fetchCustomAddonSubtitles(addon, imdbId, seasonNum, epNum)
-                                    tracks.forEach { processAndEmit(it) }
-                                })
-                            }
-
-                            subTasks.awaitAll()
+                        fun launchSubtask(block: suspend () -> Unit) {
+                            subTasks.add(async(Dispatchers.IO) {
+                                try {
+                                    block()
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Throwable) {
+                                    logError(e)
+                                }
+                            })
                         }
+
+                        if (isOpenSubtitlesEnabled) {
+                            launchSubtask {
+                                val tracks = fetchOpenSubtitles(finalImdbId, seasonNum, epNum)
+                                tracks.forEach { processAndEmit(it) }
+                            }
+                        }
+
+                        if (isSubSenseEnabled) {
+                            launchSubtask {
+                                val tracks = fetchCustomAddonSubtitles(subsenseBaseUrl(), finalImdbId, seasonNum, epNum, "subsense")
+                                tracks.forEach { processAndEmit(it) }
+                            }
+                        }
+
+                        for (addon in customAddonUrls) {
+                            launchSubtask {
+                                val tracks = fetchCustomAddonSubtitles(addon, finalImdbId, seasonNum, epNum)
+                                tracks.forEach { processAndEmit(it) }
+                            }
+                        }
+
+                        subTasks.awaitAll()
                     }
                 } catch (e: Throwable) {
                     if (e is CancellationException) throw e

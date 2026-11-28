@@ -42,7 +42,10 @@ data class StremioMeta(
     @JsonProperty("releaseInfo") @SerializedName("releaseInfo") val releaseInfo: String? = null,
     @JsonProperty("description") @SerializedName("description") val description: String? = null,
     @JsonProperty("imdbRating") @SerializedName("imdbRating") val imdbRating: String? = null,
-    @JsonProperty("genres") @SerializedName("genres") val genres: List<String>? = emptyList()
+    @JsonProperty("genres") @SerializedName("genres") val genres: List<String>? = emptyList(),
+    @JsonProperty("imdb_id") @SerializedName("imdb_id") val imdbId: String? = null,
+    @JsonProperty("kitsu_id") @SerializedName("kitsu_id") val kitsuId: String? = null,
+    @JsonProperty("aliases") @SerializedName("aliases") val aliases: List<String>? = emptyList()
 )
 
 /**

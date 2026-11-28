@@ -43,6 +43,7 @@ object StremioSubHook {
 
     private const val TAG = "StremioSubHook"
     private val hookedProviderNames = ConcurrentHashMap.newKeySet<String>()
+    @Volatile private var lastLoggedHookedCount = -1
     private var observerJob: Job? = null
 
     data class ShowInfo(
@@ -270,6 +271,7 @@ object StremioSubHook {
         }
 
         hookedProviderNames.clear()
+        lastLoggedHookedCount = -1
         episodeDataCache.clear()
         latestLoadedShow = null
         deduplicateApis()
@@ -309,6 +311,11 @@ object StremioSubHook {
                     }
                 }
             }
+            val hookedCount = hookedProviderNames.size
+            if (hookedCount != lastLoggedHookedCount) {
+                lastLoggedHookedCount = hookedCount
+                Log.i(TAG, "Stremio hook chain summary: $hookedCount provider(s) enhanced")
+            }
             deduplicateApis()
         } catch (e: Throwable) {
             logError(e)
@@ -323,7 +330,8 @@ object StremioSubHook {
         val base = getBaseProvider(provider)
 
         // 3. Prevent wrapping native providers of this enricher
-        if (base.name.contains("Stremio", ignoreCase = true) || base.javaClass.name.contains("Stremio", ignoreCase = true)) {
+        // (class-name check would false-positive on any provider living in a com.stremio.* package)
+        if (base.name.contains("Stremio", ignoreCase = true)) {
             return false
         }
 

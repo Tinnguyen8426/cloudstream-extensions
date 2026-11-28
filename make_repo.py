@@ -20,13 +20,13 @@ plugins = [
     {
         "url": f"{BASE_URL}/StremioSubEnricher.cs3",
         "status": 1,
-        "version": 3,
+        "version": 4,
         "name": "Stremio Subtitle Enricher",
         "internalName": "StremioSubEnricher",
         "authors": [
             "Stremio Subtitle Enricher"
         ],
-        "description": "Tự động trích xuất và nhúng phụ đề đa ngôn ngữ từ Kitsu, OpenSubtitles v3 và Cinemeta vào CloudStream",
+        "description": "Tự động trích xuất và nhúng phụ đề đa ngôn ngữ từ Kitsu, OpenSubtitles v3, SubSense (SubDL/AnimeTosho/YIFY/…) và Cinemeta vào CloudStream",
         "fileSize": os.path.getsize(os.path.join(ROOT_DIR, "StremioSubtitleEnricher", "dist", "StremioSubEnricher.cs3")),
         "repositoryUrl": f"https://github.com/{REPO_OWNER}/{REPO_NAME}",
         "language": "en",

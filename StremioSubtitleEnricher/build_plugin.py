@@ -197,7 +197,7 @@ def main():
     manifest_data = {
         "pluginClassName": "com.stremio.subenricher.StremioSubPlugin",
         "name": "StremioSubEnricher",
-        "version": 3,
+        "version": 4,
         "requiresResources": False
     }
     manifest_file = os.path.join(CACHE_DIR, "manifest.json")
@@ -224,13 +224,13 @@ def main():
         {
             "url": "https://raw.githubusercontent.com/Tinnguyen8426/cloudstream-extensions/builds/StremioSubEnricher.cs3",
             "status": 1,
-            "version": 3,
+            "version": 4,
             "name": "Stremio Subtitle Enricher",
             "internalName": "StremioSubEnricher",
             "authors": [
                 "Stremio Subtitle Enricher"
             ],
-            "description": "Tự động trích xuất và nhúng phụ đề đa ngôn ngữ từ Kitsu, OpenSubtitles v3 và Cinemeta vào CloudStream",
+            "description": "Tự động trích xuất và nhúng phụ đề đa ngôn ngữ từ Kitsu, OpenSubtitles v3, SubSense (SubDL/AnimeTosho/YIFY/…) và Cinemeta vào CloudStream",
             "fileSize": file_size,
             "repositoryUrl": "https://github.com/Tinnguyen8426/cloudstream-extensions",
             "language": "en",
