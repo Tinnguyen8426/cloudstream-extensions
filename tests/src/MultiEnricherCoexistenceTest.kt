@@ -752,14 +752,14 @@ object MultiEnricherCoexistenceTest {
         val stremio = StremioSubHook.StremioEnrichedMainAPI(kitsunekko)
         val aiTranslator = AITranslatorEnrichedMainAPI(stremio)
 
-        // 1. Invoking getMainPage with relative data is safely normalized against mainUrl
-        val normalizedReq = MainPageRequest("Home", "movies", false)
-        val responseNormalized = try {
-            aiTranslator.getMainPage(1, normalizedReq)
+        // 1. Relative data is forwarded verbatim; the crashing leaf throws; crash barrier returns null
+        val relativeReq = MainPageRequest("Home", "movies", false)
+        val responseRelative = try {
+            aiTranslator.getMainPage(1, relativeReq)
         } catch (t: Throwable) {
             "THREW: ${t.javaClass.simpleName} - ${t.message}"
         }
-        assertTrue("Normalized request did not throw unhandled exception", responseNormalized == null)
+        assertTrue("Verbatim forwarded request was trapped by crash barrier", responseRelative == null)
 
         // 2. Invoking getMainPage with forced crashing leaf isolates exception via crash barrier
         val crashingLeafForced = object : MainAPI() {
@@ -992,17 +992,24 @@ object MultiEnricherCoexistenceTest {
         assertTrue("load() returned non-null response for full URL", resp9 != null)
         assertEquals("Full HTTPS URL preserved verbatim across 4 layers", fullUrl, payloadRecordingLeaf.lastReceivedLoadUrl)
 
-        // 10. True Relative URL Path (must still be resolved against baseApi.mainUrl)
+        // 10. True Relative URL Path (forwarded verbatim; core fixUrl owns resolution)
         val relativePath = "/movie/822653"
         val resp10 = aiTranslator.load(relativePath)
         assertTrue("load() returned non-null response for relative path", resp10 != null)
-        assertEquals("Relative URL path normalized against mainUrl", "https://api.themoviedb.org/movie/822653", payloadRecordingLeaf.lastReceivedLoadUrl)
+        assertEquals("Relative URL path forwarded verbatim to leaf", relativePath, payloadRecordingLeaf.lastReceivedLoadUrl)
 
         // 11. MainPageRequest with JSON payload data
         val jsonMainPage = MainPageRequest("Popular", tmdbJson, false)
         val mpResp = aiTranslator.getMainPage(1, jsonMainPage)
         assertTrue("getMainPage() returned non-null response for JSON data request", mpResp != null)
         assertEquals("MainPageRequest JSON data preserved verbatim across 4 layers", tmdbJson, payloadRecordingLeaf.lastReceivedMainPageData)
+
+        // 12. MainPageRequest with real-provider section data ("popular", "")
+        for (sectionData in listOf("popular", "")) {
+            val respSection = aiTranslator.getMainPage(1, MainPageRequest("Section-$sectionData", sectionData, false))
+            assertTrue("getMainPage() non-null for section data '$sectionData'", respSection != null)
+            assertEquals("Section data '$sectionData' forwarded verbatim across 4 layers", sectionData, payloadRecordingLeaf.lastReceivedMainPageData)
+        }
     }
 
     // =========================================================================

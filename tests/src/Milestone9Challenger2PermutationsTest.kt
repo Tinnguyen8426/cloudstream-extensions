@@ -17,6 +17,7 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.fixUrl
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -29,8 +30,8 @@ import kotlinx.coroutines.runBlocking
  * - AiSubtitleTranslator
  *
  * All non-HTTP & JSON payloads in load(url) and getMainPage() are preserved verbatim
- * to the leaf provider without string mangling or exceptions, and genuine relative
- * paths are correctly normalized against baseApi.mainUrl.
+ * to the leaf provider without string mangling or exceptions. Relative paths are also
+ * forwarded verbatim; the core `fixUrl` (APIRepository.load) owns URL resolution.
  */
 object Milestone9Challenger2PermutationsTest {
 
@@ -224,11 +225,13 @@ object Milestone9Challenger2PermutationsTest {
         assertTrue("$label: load() non-null for kitsu URN", resp3 != null)
         assertEquals("$label: Leaf received verbatim kitsu URN", urnPayload, leaf.lastReceivedLoadUrl)
 
-        // 4. Mandatory Vector: /relative/path -> resolved to https://base.mainUrl/relative/path
+        // 4. Mandatory Vector: /relative/path forwarded verbatim to leaf (core fixUrl resolves)
         val relativePayload = "/relative/path"
         val resp4 = head.load(relativePayload)
         assertTrue("$label: load() non-null for relative path", resp4 != null)
-        assertEquals("$label: Leaf received normalized relative URL", "$expectedBaseUrl/relative/path", leaf.lastReceivedLoadUrl)
+        assertEquals("$label: Leaf received verbatim relative path", relativePayload, leaf.lastReceivedLoadUrl)
+        assertEquals("$label: Core fixUrl resolves '/relative/path' against mainUrl",
+            "$expectedBaseUrl/relative/path", leaf.fixUrl(relativePayload))
 
         // 5. Mandatory Vector: getMainPage with JSON request.data
         val mainPageJson = """{"filter":"popular"}"""
@@ -261,10 +264,10 @@ object Milestone9Challenger2PermutationsTest {
         assertTrue("$label: load() non-null for IMDb ID", resp9 != null)
         assertEquals("$label: Leaf received verbatim IMDb ID", imdbId, leaf.lastReceivedLoadUrl)
 
-        // 10. Adversarial Vector: Relative path without leading slash (e.g. "relative/subpath")
+        // 10. Adversarial Vector: Relative path without leading slash (forwarded verbatim)
         val relNoSlash = "relative/subpath"
         val resp10 = head.load(relNoSlash)
         assertTrue("$label: load() non-null for relative path without leading slash", resp10 != null)
-        assertEquals("$label: Leaf received normalized relative URL for no-slash path", "$expectedBaseUrl/relative/subpath", leaf.lastReceivedLoadUrl)
+        assertEquals("$label: Leaf received verbatim no-slash relative path", relNoSlash, leaf.lastReceivedLoadUrl)
     }
 }

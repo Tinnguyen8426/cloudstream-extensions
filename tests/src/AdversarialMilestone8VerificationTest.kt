@@ -281,7 +281,7 @@ object AdversarialMilestone8VerificationTest {
                 assertEquals("Perm #$permIdx: '${provider.name}' supportedTypes preserved",
                     setOf(TvType.Anime, TvType.Movie, TvType.TvSeries), provider.supportedTypes)
 
-                // Crash Barrier & relative URL resolution check on VegaMovies
+                // Crash Barrier check: "" is forwarded verbatim; VegaMovies leaf throws on schemeless data
                 val homeResp = provider.getMainPage(1, MainPageRequest("Featured", "", false))
                 assertTrue("Perm #$permIdx: '${provider.name}' getMainPage did not crash",
                     homeResp != null || provider.name == "VegaMovies")

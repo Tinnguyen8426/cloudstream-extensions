@@ -12,6 +12,7 @@ import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.fixUrl
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -58,6 +59,7 @@ object AdversarialM9PayloadTest {
 
         var lastReceivedLoadUrl: String? = null
         var lastReceivedMainPageData: String? = null
+        var lastReceivedMainPageRequest: MainPageRequest? = null
         var shouldThrowInLoad: Throwable? = null
         var shouldThrowInMainPage: Throwable? = null
 
@@ -71,6 +73,7 @@ object AdversarialM9PayloadTest {
 
         override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
             lastReceivedMainPageData = request.data
+            lastReceivedMainPageRequest = request
             shouldThrowInMainPage?.let { throw it }
             return newHomePageResponse(request.name, emptyList(), false)
         }
@@ -211,23 +214,23 @@ object AdversarialM9PayloadTest {
     }
 
     /**
-     * Test 3: Genuine relative paths MUST be resolved against baseApi.mainUrl across all 4 layers.
+     * Test 3: Decorators must forward relative paths verbatim; only the core `fixUrl` resolves them.
      */
     private suspend fun testRelativeUrlResolutionAcrossChain() {
-        println("\n>>> Test 3: Genuine Relative URL Path Resolution Across 4 Layers")
+        println("\n>>> Test 3: Relative URLs Forwarded Verbatim; Core fixUrl Owns Resolution")
 
-        val testCases = listOf(
-            "/movie/822653" to "https://api.themoviedb.org/movie/822653",
-            "movie/822653" to "https://api.themoviedb.org/movie/822653",
-            "trending" to "https://api.themoviedb.org/trending",
-            "/trending" to "https://api.themoviedb.org/trending",
-            "/api/v3/tv/popular?page=1" to "https://api.themoviedb.org/api/v3/tv/popular?page=1",
-            "api/v3/tv/popular?page=1" to "https://api.themoviedb.org/api/v3/tv/popular?page=1",
-            "" to "https://api.themoviedb.org",
-            "   " to "https://api.themoviedb.org"
+        val relativeVectors = listOf(
+            "/movie/822653",
+            "movie/822653",
+            "trending",
+            "/trending",
+            "/api/v3/tv/popular?page=1",
+            "api/v3/tv/popular?page=1",
+            "",
+            "   "
         )
 
-        for ((relativeInput, expectedResolved) in testCases) {
+        for (relativeInput in relativeVectors) {
             val leaf = TestLeafProvider(mainUrlVal = "https://api.themoviedb.org/")
             val anime47 = Anime47Hook.EnrichedMainAPI(leaf)
             val kitsu = KitsunekkoHook.KitsunekkoEnrichedMainAPI(anime47)
@@ -235,20 +238,26 @@ object AdversarialM9PayloadTest {
             val aiTranslator = AITranslatorEnrichedMainAPI(stremio)
 
             val resp = aiTranslator.load(relativeInput)
-            assertTrue("Relative load('$relativeInput') non-null", resp != null)
-            assertEquals("Relative path '$relativeInput' correctly resolved against mainUrl", expectedResolved, leaf.lastReceivedLoadUrl)
+            assertTrue("load('$relativeInput') non-null", resp != null)
+            assertEquals("Relative path '$relativeInput' forwarded verbatim to leaf", relativeInput, leaf.lastReceivedLoadUrl)
         }
 
-        // Test with baseUrl ending without slash and with slash
+        // The core owns normalization: APIRepository.load calls fixUrl before delegating.
+        val coreLeaf = TestLeafProvider(mainUrlVal = "https://api.themoviedb.org")
+        assertEquals("Core fixUrl resolves '/movie/822653' against mainUrl",
+            "https://api.themoviedb.org/movie/822653", coreLeaf.fixUrl("/movie/822653"))
+        assertEquals("Core fixUrl resolves 'movies/interstellar' against mainUrl",
+            "https://api.themoviedb.org/movies/interstellar", coreLeaf.fixUrl("movies/interstellar"))
+
         val leafSlash = TestLeafProvider(mainUrlVal = "https://vegamovies.im/")
         val aiSlash = AITranslatorEnrichedMainAPI(Anime47Hook.EnrichedMainAPI(leafSlash))
         aiSlash.load("/movies/interstellar")
-        assertEquals("BaseUrl with slash does not produce double slash", "https://vegamovies.im/movies/interstellar", leafSlash.lastReceivedLoadUrl)
+        assertEquals("Decorator preserves '/movies/interstellar' verbatim (no base prefixing)", "/movies/interstellar", leafSlash.lastReceivedLoadUrl)
 
         val leafNoSlash = TestLeafProvider(mainUrlVal = "https://vegamovies.im")
         val aiNoSlash = AITranslatorEnrichedMainAPI(Anime47Hook.EnrichedMainAPI(leafNoSlash))
         aiNoSlash.load("movies/interstellar")
-        assertEquals("BaseUrl without slash properly prepends single slash", "https://vegamovies.im/movies/interstellar", leafNoSlash.lastReceivedLoadUrl)
+        assertEquals("Decorator preserves 'movies/interstellar' verbatim (no base prefixing)", "movies/interstellar", leafNoSlash.lastReceivedLoadUrl)
     }
 
     /**
@@ -279,7 +288,7 @@ object AdversarialM9PayloadTest {
     }
 
     /**
-     * Test 5: MainPageRequest data preservation (JSON payloads, relative paths, absolute URLs).
+     * Test 5: MainPageRequest (name/data/horizontalImages) forwarded verbatim across 4 layers.
      */
     private suspend fun testMainPageRequestPayloadPreservation() {
         println("\n>>> Test 5: MainPageRequest Data Preservation Across 4 Layers")
@@ -290,26 +299,28 @@ object AdversarialM9PayloadTest {
         val stremio = StremioSubHook.StremioEnrichedMainAPI(kitsu)
         val aiTranslator = AITranslatorEnrichedMainAPI(stremio)
 
-        // 1. JSON payload in MainPageRequest
-        val jsonPayload = """{"category":"trending","page":1,"time_window":"week"}"""
-        val req1 = MainPageRequest("Trending", jsonPayload, false)
-        val resp1 = aiTranslator.getMainPage(1, req1)
-        assertTrue("getMainPage(JSON) succeeded", resp1 != null)
-        assertEquals("MainPageRequest JSON data preserved verbatim", jsonPayload, leaf.lastReceivedMainPageData)
+        val verbatimVectors = listOf(
+            """{"category":"trending","page":1,"time_window":"week"}""",
+            "/3/trending/movie/week",
+            "popular",
+            "",
+            "   ",
+            "urn:series:789",
+            "822653",
+            "tt0944947",
+            "https://external.api.org/catalog"
+        )
 
-        // 2. Relative path in MainPageRequest
-        val relPath = "/3/trending/movie/week"
-        val req2 = MainPageRequest("Trending Movies", relPath, false)
-        val resp2 = aiTranslator.getMainPage(1, req2)
-        assertTrue("getMainPage(Relative) succeeded", resp2 != null)
-        assertEquals("MainPageRequest relative data resolved against mainUrl", "https://api.themoviedb.org/3/trending/movie/week", leaf.lastReceivedMainPageData)
-
-        // 3. Absolute URL in MainPageRequest
-        val absUrl = "https://external.api.org/catalog"
-        val req3 = MainPageRequest("External", absUrl, false)
-        val resp3 = aiTranslator.getMainPage(1, req3)
-        assertTrue("getMainPage(Absolute) succeeded", resp3 != null)
-        assertEquals("MainPageRequest absolute data preserved verbatim", absUrl, leaf.lastReceivedMainPageData)
+        for ((idx, data) in verbatimVectors.withIndex()) {
+            val horizontal = idx % 2 == 1
+            val req = MainPageRequest("Section #$idx", data, horizontal)
+            val resp = aiTranslator.getMainPage(1, req)
+            assertTrue("getMainPage(vector #$idx) succeeded", resp != null)
+            val received = leaf.lastReceivedMainPageRequest
+            assertEquals("MainPageRequest vector #$idx data forwarded verbatim", data, received?.data)
+            assertEquals("MainPageRequest vector #$idx section name preserved", "Section #$idx", received?.name)
+            assertEquals("MainPageRequest vector #$idx horizontalImages preserved", horizontal, received?.horizontalImages)
+        }
     }
 
     /**

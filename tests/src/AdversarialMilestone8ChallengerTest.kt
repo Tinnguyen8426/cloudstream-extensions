@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * Milestone 8 Challenger Empirical Adversarial Test Harness.
  *
  * Exhaustively stress-tests:
- * 1. URL and Request Sanitization Matrix (schemeless, empty, relative, malformed, trailing slashes).
+ * 1. URL and Request Verbatim Forwarding Matrix (schemeless, empty, relative, malformed, trailing slashes).
  * 2. Complete Crash Barrier Isolation against Hostile Leaf Exceptions (IllegalArgument, SocketTimeout,
  *    UnknownHost, NPE, IOOBE, Jackson parsing errors) across all 9 MainAPI entry points.
  * 3. Bidirectional Dynamic Property Delegation & Mutability across the entire 4-layer wrapper chain.
@@ -84,14 +84,14 @@ object AdversarialMilestone8ChallengerTest {
     }
 
     // =========================================================================
-    // SUITE 1: Extreme URL & Request Sanitization Matrix
+    // SUITE 1: Extreme URL & Request Verbatim Forwarding Matrix
     // =========================================================================
-    private fun testUrlAndRequestSanitizationMatrix() = runBlocking {
-        println("\n>>> Suite 1: Extreme URL & Request Sanitization Matrix")
+    private fun testUrlAndRequestVerbatimForwardingMatrix() = runBlocking {
+        println("\n>>> Suite 1: Extreme URL & Request Verbatim Forwarding Matrix")
 
-        class InspectableLeafProvider(baseUrl: String) : MainAPI() {
+        class RecordingLeafProvider(baseUrl: String) : MainAPI() {
             init {
-                name = "InspectableLeaf"
+                name = "RecordingLeaf"
                 mainUrl = baseUrl
             }
             var lastReceivedMainPageData: String? = null
@@ -99,24 +99,17 @@ object AdversarialMilestone8ChallengerTest {
 
             override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
                 lastReceivedMainPageData = request.data
-                // Verify OkHttp would accept this scheme
-                if (request.data.isNotBlank() && !request.data.startsWith("http://") && !request.data.startsWith("https://")) {
-                    throw IllegalArgumentException("Expected URL scheme 'http' or 'https' but no scheme was found for ${request.data}")
-                }
                 return newHomePageResponse(request.name, emptyList(), false)
             }
 
             override suspend fun load(url: String): LoadResponse? {
                 lastReceivedLoadUrl = url
-                if (url.isNotBlank() && !url.startsWith("http://") && !url.startsWith("https://")) {
-                    throw IllegalArgumentException("Expected URL scheme 'http' or 'https' but no scheme was found for $url")
-                }
                 return newMovieLoadResponse("TestMovie", url, TvType.Movie, url)
             }
         }
 
         // Test with standard base URL: "https://vegamovies.im"
-        val leaf1 = InspectableLeafProvider("https://vegamovies.im")
+        val leaf1 = RecordingLeafProvider("https://vegamovies.im")
         val chain1 = AITranslatorEnrichedMainAPI(
             StremioSubHook.StremioEnrichedMainAPI(
                 KitsunekkoHook.KitsunekkoEnrichedMainAPI(
@@ -125,31 +118,33 @@ object AdversarialMilestone8ChallengerTest {
             )
         )
 
-        val testCases = listOf(
-            // rawData -> expectedResolvedData
-            "" to "https://vegamovies.im",
-            "/trending" to "https://vegamovies.im/trending",
-            "trending" to "https://vegamovies.im/trending",
-            "//nested/path" to "https://vegamovies.im//nested/path",
-            "/category/action?page=2&sort=latest" to "https://vegamovies.im/category/action?page=2&sort=latest",
-            "/item#reviews" to "https://vegamovies.im/item#reviews",
-            "https://cdn.external.com/api/feed" to "https://cdn.external.com/api/feed",
-            "http://mirror.vegamovies.im/list" to "http://mirror.vegamovies.im/list"
+        val verbatimVectors = listOf(
+            "",
+            "popular",
+            "/trending",
+            "//nested/path",
+            "/category/action?page=2&sort=latest",
+            "/item#reviews",
+            "https://cdn.external.com/api/feed",
+            "http://mirror.vegamovies.im/list",
+            """{"category":"trending"}""",
+            "urn:series:123",
+            "822653",
+            "tt0944947"
         )
 
-        for ((input, expected) in testCases) {
-            val req = MainPageRequest("Cat", input, false)
-            val res = chain1.getMainPage(1, req)
+        for (input in verbatimVectors) {
+            val res = chain1.getMainPage(1, MainPageRequest("Cat", input, false))
             assertTrue("getMainPage accepted '$input' without crash", res != null)
-            assertEquals("getMainPage resolved '$input' correctly", expected, leaf1.lastReceivedMainPageData)
+            assertEquals("getMainPage forwarded '$input' verbatim", input, leaf1.lastReceivedMainPageData)
 
             val loadRes = chain1.load(input)
             assertTrue("load accepted '$input' without crash", loadRes != null)
-            assertEquals("load resolved '$input' correctly", expected, leaf1.lastReceivedLoadUrl)
+            assertEquals("load forwarded '$input' verbatim", input, leaf1.lastReceivedLoadUrl)
         }
 
-        // Test with trailing slash in mainUrl: "https://vegamovies.im/"
-        val leaf2 = InspectableLeafProvider("https://vegamovies.im/")
+        // Test with trailing slash in mainUrl: data must still be forwarded verbatim
+        val leaf2 = RecordingLeafProvider("https://vegamovies.im/")
         val chain2 = AITranslatorEnrichedMainAPI(
             StremioSubHook.StremioEnrichedMainAPI(
                 KitsunekkoHook.KitsunekkoEnrichedMainAPI(
@@ -160,16 +155,27 @@ object AdversarialMilestone8ChallengerTest {
 
         val resTrailing = chain2.getMainPage(1, MainPageRequest("Home", "/movies", false))
         assertTrue("Trailing slash base accepted without crash", resTrailing != null)
-        assertEquals("Trailing slash correctly stripped before appending path",
-            "https://vegamovies.im/movies", leaf2.lastReceivedMainPageData)
+        assertEquals("'/movies' forwarded verbatim regardless of trailing slash base",
+            "/movies", leaf2.lastReceivedMainPageData)
 
-        // Test with empty base URL ("") and relative path
-        // Leaf will throw IllegalArgumentException on schemeless path, but crash barrier must catch it
-        val leafEmptyBase = InspectableLeafProvider("")
+        // Crash barrier: throwing leaf must be trapped (returned as null), never propagated
+        val throwingLeafEmptyBase = object : MainAPI() {
+            init {
+                name = "ThrowingLeafEmptyBase"
+                mainUrl = ""
+            }
+            override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+                throw IllegalArgumentException("Expected URL scheme 'http' or 'https' but no scheme was found for ${request.data}")
+            }
+            override suspend fun load(url: String): LoadResponse? {
+                throw IllegalArgumentException("Expected URL scheme 'http' or 'https' but no scheme was found for $url")
+            }
+            override suspend fun search(query: String): List<SearchResponse>? = null
+        }
         val chainEmptyBase = AITranslatorEnrichedMainAPI(
             StremioSubHook.StremioEnrichedMainAPI(
                 KitsunekkoHook.KitsunekkoEnrichedMainAPI(
-                    Anime47Hook.EnrichedMainAPI(leafEmptyBase)
+                    Anime47Hook.EnrichedMainAPI(throwingLeafEmptyBase)
                 )
             )
         )
@@ -571,7 +577,7 @@ object AdversarialMilestone8ChallengerTest {
         println("================================================================================")
 
         try {
-            testUrlAndRequestSanitizationMatrix()
+            testUrlAndRequestVerbatimForwardingMatrix()
             testHostileLeafExceptionInjection()
             testDynamicPropertyDelegationAndMutability()
             testAPIHolderDeduplicationAndLifecycleStress()

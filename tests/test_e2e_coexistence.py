@@ -15,6 +15,10 @@ import threading
 import subprocess
 import unittest
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_DIR = os.path.join(ROOT_DIR, "tests")
 STREMIO_DIST = os.path.join(ROOT_DIR, "StremioSubtitleEnricher", "dist")
@@ -434,7 +438,7 @@ class TestKotlinJvmCoexistenceSuite(unittest.TestCase):
 
     def test_execute_kotlin_jvm_e2e_suite(self):
         script_path = os.path.join(TEST_DIR, "run_kotlin_e2e.py")
-        ret = subprocess.run([sys.executable, script_path], capture_output=True, text=True)
+        ret = subprocess.run([sys.executable, script_path], capture_output=True, text=True, encoding="utf-8", errors="replace")
         print("\n--- Kotlin E2E Test Output ---")
         print(ret.stdout)
         if ret.stderr:

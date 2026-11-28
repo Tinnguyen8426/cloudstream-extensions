@@ -110,72 +110,12 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
     override val quickSearchTimeoutMs: Long? get() = baseApi.quickSearchTimeoutMs
     override val loadTimeoutMs: Long? get() = baseApi.loadTimeoutMs
 
-    private fun isNonHttpPayload(url: String): Boolean {
-        val trimmed = url.trim()
-        if (trimmed.isEmpty()) return false
-        if (trimmed.startsWith("{") || trimmed.startsWith("[") ||
-            trimmed.startsWith("urn:", ignoreCase = true) ||
-            trimmed.startsWith("magnet:", ignoreCase = true) ||
-            trimmed.startsWith("data:", ignoreCase = true)
-        ) {
-            return true
-        }
-        val colonIdx = trimmed.indexOf(':')
-        if (colonIdx > 0) {
-            val scheme = trimmed.substring(0, colonIdx)
-            if (!scheme.equals("http", ignoreCase = true) && !scheme.equals("https", ignoreCase = true)) {
-                if (scheme.all { it.isLetterOrDigit() || it == '+' || it == '-' || it == '.' } && scheme[0].isLetter()) {
-                    return true
-                }
-            }
-        }
-        if (trimmed.all { it.isDigit() } || (trimmed.startsWith("tt") && trimmed.length > 2 && trimmed.substring(2).all { it.isDigit() })) {
-            return true
-        }
-        return false
-    }
-
-    private fun sanitizeMainPageRequest(request: MainPageRequest, baseUrl: String): MainPageRequest {
-        val rawData = request.data
-        if (isNonHttpPayload(rawData)) return request
-        val trimmed = rawData.trim()
-        val isAbsolute = trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)
-        if (isAbsolute) return request
-        val base = baseUrl.trimEnd('/')
-        val safeData = when {
-            trimmed.isNotBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> {
-                val path = if (trimmed.startsWith("/")) trimmed else "/$trimmed"
-                "$base$path"
-            }
-            trimmed.isBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> base
-            else -> rawData
-        }
-        return if (safeData == request.data) request else MainPageRequest(request.name, safeData, request.horizontalImages)
-    }
-
-    private fun sanitizeUrl(url: String, baseUrl: String): String {
-        if (isNonHttpPayload(url)) return url
-        val trimmed = url.trim()
-        val isAbsolute = trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)
-        if (isAbsolute) return url
-        val base = baseUrl.trimEnd('/')
-        return when {
-            trimmed.isNotBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> {
-                val path = if (trimmed.startsWith("/")) trimmed else "/$trimmed"
-                "$base$path"
-            }
-            trimmed.isBlank() && base.isNotBlank() && !base.equals("NONE", ignoreCase = true) -> base
-            else -> url
-        }
-    }
-
     // Method delegation with Crash Barrier isolation
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         return try {
-            val safeReq = sanitizeMainPageRequest(request, baseApi.mainUrl)
-            baseApi.getMainPage(page, safeReq)
+            baseApi.getMainPage(page, request)
         } catch (t: Throwable) {
-            logE(TAG, "Caught leaf provider exception during getMainPage for '${baseApi.name}': ${t.message}", t)
+            logE(TAG, "Caught leaf provider exception during getMainPage for '${baseApi.name}' (section='${request.name}', data='${request.data}'): ${t.message}", t)
             null
         }
     }
@@ -209,8 +149,7 @@ open class AITranslatorEnrichedMainAPI(var baseApi: MainAPI) : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         return try {
-            val safeUrl = sanitizeUrl(url, baseApi.mainUrl)
-            val res = baseApi.load(safeUrl)
+            val res = baseApi.load(url)
             if (res != null) {
                 MediaContextManager.setContext(res)
             }
